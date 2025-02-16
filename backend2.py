@@ -71,8 +71,8 @@ DB_PATH = "waste_management.db"
 
 SMTP_SERVER = "smtp.gmail.com"  # Change for Outlook, Yahoo, etc.
 SMTP_PORT = 587
-EMAIL_SENDER = "wastemgmtsys@gmail.com"
-EMAIL_PASSWORD = "fnbm vusr rsxe sksu"  # Use App Password if necessary
+EMAIL_SENDER = "yout_email"
+EMAIL_PASSWORD = "your_password"  # Use App Password if necessary
 
 
 
