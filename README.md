@@ -106,6 +106,6 @@ Use **NGINX** as a reverse proxy for Flask & React.
 
 ---
 
-### **[📍 View Live Demo](https://your-demo-link.com) | [🐞 Report a Bug](https://github.com/yourusername/waste-management-system/issues)**  
+### **[📍 View Live Demo]([https://your-demo-link.com](https://jsquads-my.sharepoint.com/:v:/g/personal/jsquads_jsquads_onmicrosoft_com/EZhYlcncjmhOpOnUWCsfB1sBKYFwjaUGPZHb8fNmpgjiiw?nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJPbmVEcml2ZUZvckJ1c2luZXNzIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXciLCJyZWZlcnJhbFZpZXciOiJNeUZpbGVzTGlua0NvcHkifX0&e=kiBbJj)) | [🐞 Report a Bug](https://github.com/yourusername/waste-management-system/issues)**  
 
 
