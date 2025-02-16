@@ -1,7 +1,6 @@
 
 # 🗑️ Waste Management System 🚀  
 
-![Waste Management Banner](https://source.unsplash.com/featured/?recycling,environment)  
 
 ## 🌱 About the Project  
 The **Waste Management System** is an AI-powered waste classification and tracking solution that helps in segregating waste into **bio-degradable** and **non-bio-degradable** categories using deep learning. The system processes images and videos to classify waste, visualize data trends, and generate reports for sustainable waste disposal.  
@@ -31,10 +30,6 @@ python --version
 ```
 If you don’t have Python 3.9 installed, download it from: [Python 3.9 Downloads](https://www.python.org/downloads/release/python-390/)
 
-## 📸 Screenshots  
-| Dashboard | Prediction | Reports |
-|-----------|------------|----------|
-| ![Dashboard](https://source.unsplash.com/featured/?dashboard,analytics) | ![Prediction](https://source.unsplash.com/featured/?ai,classification) | ![Reports](https://source.unsplash.com/featured/?reports,documents) |
 
 ## 🚀 Getting Started  
 
