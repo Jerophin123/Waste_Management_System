@@ -62,7 +62,7 @@ cd ..
 
 ### **5️⃣ Start the Flask Backend**  
 ```sh
-python backend.py
+python backend2.py
 ```
 Visit **`http://127.0.0.1:5000/`** to access the application.
 
