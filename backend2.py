@@ -9,11 +9,13 @@ import sqlite3
 from datetime import datetime
 from flask_cors import CORS
 import logging
+from datetime import datetime, timedelta
 from flask import send_from_directory
 from flask import Response
 from flask import send_file
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
 from reportlab.graphics.shapes import Drawing
@@ -28,6 +30,7 @@ from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.lib.colors import Color
 from reportlab.platypus import Paragraph
+from google.cloud import translate_v2 as translate
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.enums import TA_CENTER
 from reportlab.lib.enums import TA_JUSTIFY
@@ -37,8 +40,16 @@ from reportlab.graphics.widgets.markers import makeMarker
 import csv
 import io
 import smtplib
+import threading
 import os
+import re
+import random
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from pydrive2.auth import GoogleAuth
+from pydrive2.drive import GoogleDrive
 import mimetypes
+import requests
 from io import BytesIO
 import matplotlib.pyplot as plt
 import matplotlib
@@ -50,7 +61,7 @@ from flask import request, jsonify, send_file
 import base64
 
 # Initialize Flask app
-frontend_build_path = os.path.abspath("./frontendbuild")
+frontend_build_path = os.path.abspath("./frontendbuild-2")
 
 app = Flask(__name__, static_folder=frontend_build_path, template_folder=frontend_build_path)
 CORS(app)  # Enable CORS for cross-origin requests
@@ -71,8 +82,439 @@ DB_PATH = "waste_management.db"
 
 SMTP_SERVER = "smtp.gmail.com"  # Change for Outlook, Yahoo, etc.
 SMTP_PORT = 587
-EMAIL_SENDER = "yout_email"
-EMAIL_PASSWORD = "your_password"  # Use App Password if necessary
+EMAIL_SENDER = "wastemgmtsys@gmail.com"
+EMAIL_PASSWORD = "fnbm vusr rsxe sksu"  # Use App Password if necessary
+
+SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+CREDS_FILE = "service_account.json"  # Replace with your actual JSON credentials file
+
+# **🔹 Google Drive Authentication (Separate Account)**
+GAUTH_CREDENTIALS_FILE = "drive_service_account.json"  # **Google Drive JSON File**
+
+
+# Google Drive Folder IDs (Replace with your actual IDs)
+PARENT_FOLDER_ID = "1m2CAUmDZoQCLcpB3ZI6HYJQKfnWDdCrq" 
+FOLDER_BIO = "1TXY_-FCJhRqxAyf6s-Vy3xf-CAVST3b8"
+FOLDER_NONBIO = "1cPvb6ZfXkq5-W9bwLB9g08FOPD1dKTAO"
+
+# Authenticate Google Sheets
+try:
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
+    client = gspread.authorize(creds)
+    SHEET_NAME = "wms"  # Replace with your actual Google Sheet name
+    sheet = client.open(SHEET_NAME).sheet1
+    print("✅ Connected to Google Sheets successfully!")
+except Exception as e:
+    print(f"❌ Error connecting to Google Sheets: {e}")
+    sheet = None
+
+# Advanced chatbot responses (Enhanced with Backend, Frontend, and Usage Knowledge)
+CHATBOT_RESPONSES = {
+    "hello": [
+        "<p>Hello! How can I assist you with the <b>Waste Management System</b>?</p>",
+        "<p>Hi there! Need help with <b>WMS</b>?</p>",
+        "<p>Hey! How can I help you today?</p>"
+    ],
+    "system_overview": [
+        "<p>The <b>Waste Management System (WMS)</b> is an AI-powered platform that classifies waste as "
+        "<b>Bio-Degradable</b> or <b>Non-Bio-Degradable</b> using Machine Learning.</p>"
+        "<p>It includes a <b>React frontend</b> and a <b>Flask backend</b> that processes predictions and maintains records.</p>"
+        "<p>Users can <b>upload images</b>, use <b>real-time webcam detection</b>, and analyze waste in videos.</p>"
+        "<p>The system also provides <b>data analytics, reports, and trends</b> to help in better waste segregation.</p>"
+    ],
+    "backend_functionality": [
+        "<p>The <b>backend</b> is built with <b>Flask (Python)</b> and handles <b>image classification, API requests, database storage, and analytics</b>.</p>"
+        "<p>It uses a <b>Keras-based AI model</b> with <b>DepthwiseConv2D</b> to predict waste type.</p>"
+        "<p>The database (<b>SQLite</b>) stores all waste records including <b>filename, type, confidence score, and timestamp</b>.</p>"
+        "<p><b>API Endpoints</b> provide access to <b>waste statistics, trends, logs, and reports</b>.</p>"
+        "<p>It also includes <b>real-time image processing, video frame analysis, and automated email reports</b>.</p>"
+    ],
+    "frontend_structure": [
+        "<p>The <b>frontend</b> is built using <b>React.js</b> with <b>Material-UI</b> & <b>Framer Motion</b> for an interactive UI.</p>"
+        "<p>It includes <b>Dark & Light mode</b> support, animated transitions, and a floating chatbot.</p>"
+        "<p><b>Key Features:</b></p>"
+        "<ul>"
+        "<li><b>Dashboard:</b> Displays waste statistics, trends, and progress.</li>"
+        "<li><b>Prediction Page:</b> Allows <b>image upload, webcam classification, and video processing</b>.</li>"
+        "<li><b>Logs Page:</b> Stores past records, allows <b>report downloads</b> and <b>email reports</b>.</li>"
+        "<li><b>Chatbot:</b> Provides assistance and guides users on waste classification.</li>"
+        "</ul>"
+    ],
+    "how_to_use": [
+        "<p><b>To classify waste:</b></p>"
+        "<ul>"
+        "<li>Go to the <b>Prediction Page</b> and choose <b>Image Upload</b> or <b>Camera Mode</b>.</li>"
+        "<li>Click <b>Upload</b> or <b>Capture</b>, and the system will classify the waste as <b>Bio-Degradable</b> or <b>Non-Bio-Degradable</b>.</li>"
+        "</ul>"
+        "<p><b>For video analysis:</b></p>"
+        "<ul>"
+        "<li>Upload a <b>video file</b> on the <b>Prediction Page</b>, and the system will extract frames and classify them.</li>"
+        "</ul>"
+        "<p><b>To analyze waste trends:</b></p>"
+        "<ul>"
+        "<li>Visit the <b>Dashboard</b> for <b>Pie Charts, Bar Charts, and Line Graphs</b> showing waste distribution over time.</li>"
+        "</ul>"
+    ],
+    "logs": [
+        "<p>📜 <b>Logs Section:</b> The system maintains a record of all waste classifications.</p>",
+        "<p>You can view past logs in the <b>'Logs'</b> tab, which includes <b>filename, waste type, confidence score, and timestamp</b>.</p>"
+        "<p>Logs help track historical waste segregation and improve classification efficiency.</p>"
+    ],
+    "records": [
+        "<p>📝 <b>Viewing Past Records:</b> The system saves all classified waste records in a database.</p>",
+        "<p>Go to the <b>'Logs'</b> tab to check previous predictions along with <b>confidence scores</b>.</p>",
+        "<p>Each record includes the <b>date, file name, waste type, and prediction confidence</b>.</p>"
+    ],
+   "download_report": [
+        "<p>📥 <b>Downloading Reports:</b> You can generate a report summarizing waste classification data.</p>",
+        "<p>Click <b>'Generate Report'</b> on the <b>'Logs'</b> page to create a detailed <b>PDF</b>.</p>",
+        "<p>The report includes <b>classification trends, analytics, and waste distribution insights</b>.</p>"
+    ],
+    "csv_logs": [
+        "<p>📊 <b>Exporting Logs as CSV:</b> You can download past logs in a structured <b>CSV</b> format.</p>",
+        "<p>Click <b>'Download Logs'</b> on the <b>'Logs'</b> page to get a CSV file.</p>",
+        "<p><b>CSV</b> files can be opened in <b>Excel, Google Sheets</b>, or any data analysis tool.</p>"
+    ],
+    "pdf_reports": [
+        "<p>📄 <b>Generating PDF Reports:</b> You can get a detailed <b>PDF</b> report with charts and analytics.</p>",
+        "<p>Click <b>'Generate Report'</b> in the <b>'Logs'</b> tab to create a structured report.</p>",
+        "<p>The <b>PDF</b> includes <b>statistics, bar charts, and pie charts</b> of waste distribution.</p>"
+    ],
+    "how_to_get_logs": [
+        "<p>🔍 <b>How to Retrieve Logs?</b></p>",
+        "<ol>",
+        "<li>Go to the <b>'Logs'</b> section to view all past records.</li>",
+        "<li>Click <b>'Download Logs'</b> to get a <b>CSV</b> file.</li>",
+        "<li>Click <b>'Generate Report'</b> to create a <b>PDF</b>.</li>",
+        "<li>You can also filter records by <b>date, month, or year</b> for better insights.</li>",
+        "</ol>"
+    ],
+    "real_time_prediction": [
+        "<p>✅ Yes, you can classify waste in <b>real-time</b> using your webcam.</p>"
+        "<p>Go to the <b>Prediction Page</b>, switch to <b>Camera Mode</b>, and click <b>Start Real-Time</b>.</p>"
+        "<p>The system will continuously classify waste and display the <b>confidence scores</b> for <b>Bio-Degradable</b> & <b>Non-Bio-Degradable</b>.</p>"
+        "<p>🔊 You will also get <b>audio alerts</b> when confidence reaches <b>100%</b>.</p>"
+    ],
+    "deployment": [
+        "<p>🚀 <b>How to Deploy WMS?</b></p>"
+        "<ul>"
+        "<li>To deploy <b>WMS locally</b>, install <b>Flask, React.js, SQLite, and TensorFlow</b>.</li>"
+        "<li>For <b>cloud hosting</b>, deploy the backend on <b>AWS, Google Cloud, or Azure</b> using <b>Docker</b> or a <b>virtual machine</b>.</li>"
+        "<li>The frontend can be deployed on <b>Vercel, Netlify, or Firebase Hosting</b>.</li>"
+        "<li>For <b>scalability</b>, replace <b>SQLite</b> with <b>PostgreSQL</b> and use <b>Redis</b> for caching frequent API calls.</li>"
+        "</ul>"
+    ],
+    "waste_collected": [
+        "You can check the waste collected over a specific period by specifying the date range.",
+        "I can provide details about waste collected on a specific day, time, or within a given range. Just ask!",
+        "To check waste collection data, specify a time period like 'How much waste was collected today?' or 'Show me waste stats for January 2025'."
+    ],
+    "waste_on_date": [
+        "<p>📅 <b>Check Waste Collected on a Specific Date:</b></p>"
+        "<p>Specify a date to check the waste collected. Example: <b>'Show me the waste collected on 2025-02-20'</b>.</p>"
+        "<p>You can ask, <b>'How much waste was collected on March 1, 2025?'</b></p>"
+        "<p>Enter a specific date, and I will fetch the waste data for that day.</p>"
+    ],
+    "waste_in_time_range": [
+        "<p>⏳ <b>Check Waste Collected Within a Specific Time Range:</b></p>"
+        "<p>To check waste collection within a specific time range, ask like this: <b>'How much waste was collected between 10 AM and 5 PM today?'</b></p>"
+        "<p>You can filter waste records by a custom time range. Just specify start and end times!</p>"
+        "<p>Try asking: <b>'Show waste collected between 6 PM and 9 PM on 2025-02-19'</b>.</p>"
+    ],
+    "bio_nonbio_waste": [
+        "<p>♻ <b>Check Bio-Degradable & Non-Bio-Degradable Waste:</b></p>"
+        "<p>I can fetch how much <b>bio</b> and <b>non-bio</b> waste was collected within a specific period.</p>"
+        "<p>Try asking, <b>'How much bio and non-bio waste was collected today?'</b></p>"
+        "<p>For category-wise segregation, specify the type and duration, e.g., <b>'Show non-bio waste collected this week'</b>.</p>"
+    ],
+    "waste_on_weekday": [
+        "<p>📆 <b>Check Waste Collected on a Specific Weekday:</b></p>"
+        "<p>I can fetch waste collected on any weekday. Try asking: <b>'How much waste was collected last Monday?'</b></p>"
+        "<p>Specify a weekday (<b>Sunday to Saturday</b>), and I'll fetch waste data for that day.</p>"
+        "<p>Try: <b>'Show me the waste collected on Wednesday'</b> or <b>'What was the waste collected last Friday?'</b></p>"
+    ],
+    "troubleshooting": [
+        "<p>⚙️ <b>Troubleshooting Guide:</b></p>"
+        "<p><b>If the AI model isn't working:</b></p>"
+        "<ul>"
+        "<li>Ensure the <code>keras_model.h5</code> file is in the correct directory.</li>"
+        "<li>Check that you have installed <b>TensorFlow & Keras</b>.</li>"
+        "<li>If using a custom model, ensure you define <code>DepthwiseConv2D</code> as a custom layer.</li>"
+        "</ul>"
+        "<p><b>If the Flask API crashes:</b></p>"
+        "<ul>"
+        "<li>Check if port <b>5000</b> is already in use with <code>netstat -ano | findstr :5000</code>.</li>",
+        "<li>Run <code>flask run --port 5001</code> to change the port.</li>",
+        "</ul>"
+        "<p><b>If image uploads fail:</b></p>"
+        "<ul>"
+        "<li>Ensure the uploaded file is an image (<code>JPG</code>, <code>PNG</code>).</li>"
+        "<li>Check Flask file size limits (<code>MAX_CONTENT_LENGTH</code>).</li>"
+        "</ul>"
+        "<p><b>If there's a database error:</b></p>"
+        "<ul>"
+        "<li>Delete <code>waste_management.db</code> and restart the backend (<code>init_db()</code> will recreate it).</li>"
+        "</ul>"
+    ],
+    "security": [
+        "<p>🔒 <b>Security Features in WMS:</b></p>"
+        "<ul>"
+        "<li>By default, WMS does not require authentication, but you can add <b>JWT (JSON Web Token)</b> authentication.</li>"
+        "<li>To restrict access, modify the <b>Flask API</b> to require <b>API keys</b> for each request.</li>"
+        "<li>For report security, ensure only <b>authorized users</b> receive report emails.</li>"
+        "<li>To prevent database tampering, restrict API endpoints using <b>CORS policies</b> and <b>rate limiting</b>.</li>"
+        "</ul>"
+    ],
+    "data_analysis": [
+        "<p>📊 <b>Data Analysis & Insights:</b></p>"
+        "<ul>"
+        "<li>You can generate a detailed <b>PDF report</b> from the <b>Logs Page</b>.</li>"
+        "<li>WMS offers <b>data analytics, charts, and trend analysis</b> in the <b>Dashboard</b>.</li>"
+        "<li>For waste classification trends, WMS provides <b>Pie Charts, Bar Graphs, and Line Graphs</b>.</li>"
+        "<li>To export logs, click <b>Download CSV</b>, which can be opened in <b>Excel</b>.</li>"
+        "</ul>"
+    ],
+    "send_email": [
+        "<p>📧 <b>Send Email Reports:</b> You can send a <b>waste management report</b> directly via email.</p>"
+        "<p>To send a report, type: <b>'Send mail to example@gmail.com'</b></p>"
+        "<p>Alternatively, go to the <b>'Logs'</b> tab and enter an email in the <b>'Send Report'</b> section.</p>"
+        "<p>You can also upload a <b>.txt</b> file with multiple emails and send reports in bulk.</p>"
+    ],
+    "how_to_send_email": [
+        "<p>📩 <b>How to Send Email Reports?</b></p>"
+        "<ol>",
+        "<li>The system will get the email and send the report.</li>"
+        "<li>You can enter the email in the <b>'Logs'</b> tab.</li>"
+        "<li>If you want to send to multiple people, upload a <b>.txt</b> file</b> with email addresses.</li>"
+        "<li>📥 Check your inbox for the report!</li>"
+        "</ol>"
+    ],
+    "total_waste": [
+        "<p>📊 <b>Total Waste Collected:</b> The system tracks all waste items classified over time.</p>"
+        "<p>You can check how much waste has been collected so far.</p>"
+        "<p>Try asking: <b>'How much total waste has been collected?'</b></p>"
+    ],
+    "waste_percentage": [
+        "<p>♻ <b>Bio vs Non-Bio Waste Distribution:</b> This helps understand how much of the waste is <b>biodegradable</b> vs <b>non-biodegradable</b>.</p>",
+        "<p>You can ask for the <b>percentage of waste</b> collected as bio and non-bio.</p>"
+        "<p>Try asking: <b>'What is the percentage of bio and non-bio waste?'</b></p>"
+    ],
+    "waste_trend": [
+        "<p>📈 <b>Waste Classification Trend Over Time:</b> The system tracks the number of classified waste items each month.</p>"
+        "<p>You can check how <b>waste collection trends</b> over time.</p>"
+        "<p>Try asking: <b>'Show me waste trends over the last few months.'</b></p>"
+    ],
+    "waste_trend_specific_month": [
+        "<p>📈 <b>Monthly Waste Trend:</b> You can check how much waste was collected in a <b>specific month and year</b>.</p>"
+        "<p>Try asking: <b>'Waste trend in January 2025'</b> or <b>'Waste collected in March 2024'</b>.</p>"
+    ],
+    "generate_report": [
+        "<p>📄 <b>Generating your Waste Management Report...</b> Please wait.</p>"
+        "<p>✅ <b>Report generation started.</b> You will receive a download link shortly.</p>"
+        "<p>📝 <b>Creating your detailed report.</b> It will be available for download soon!</p>"
+    ],
+    "waste_management_best_practices": [
+        "<p>♻ <b>Best Practices for Waste Management:</b></p>"
+        "<ol>"
+        "<li>1️⃣ Always <b>segregate waste</b> into <b>bio-degradable</b> and <b>non-bio-degradable</b> categories.</li>"
+        "<li>2️⃣ Reduce <b>single-use plastics</b> and opt for reusable alternatives.</li>"
+        "<li>3️⃣ Compost kitchen waste like <b>fruit peels, vegetable scraps, and coffee grounds</b>.</li>"
+        "<li>4️⃣ Dispose of <b>hazardous waste</b> (batteries, e-waste) properly to avoid contamination.</li>"
+        "<li>5️⃣ Participate in local <b>recycling programs</b> for paper, glass, and plastics.</li>"
+        "<li>6️⃣ Encourage <b>zero-waste initiatives</b> at home and workplaces.</li>"
+        "<li>7️⃣ Use <b>waste classification AI</b> to improve waste processing efficiency.</li>"
+        "<li>8️⃣ Minimize food waste by <b>donating excess food</b> to food banks.</li>"
+        "</ol>"
+    ],
+    # 🔹 DETAILED WASTE CLASSIFICATION GUIDELINES
+    "bio_vs_nonbio_detailed": [
+        "<p>♻ <b>Understanding Bio-Degradable & Non-Bio-Degradable Waste</b></p>"
+        "<p>🟢 <b>Bio-Degradable Waste:</b> Can be decomposed naturally and is eco-friendly.</p>"
+        "<ul>"
+        "<li><b>Examples:</b> Food scraps, paper, wood, cotton, natural fabric.</li>"
+        "<li><b>Disposal:</b> Composting, Organic Waste Management.</li>"
+        "</ul>"
+        "<p>🚯 <b>Non-Bio-Degradable Waste:</b> Does not break down easily and can harm ecosystems.</p>"
+        "<ul>"
+        "<li><b>Examples:</b> Plastics, metals, glass, electronic waste.</li>"
+        "<li><b>Disposal:</b> Recycling, Special Waste Treatment Facilities.</li>"
+        "</ul>"
+        "<p>🔄 <b>Key Tip:</b> Always separate <b>bio & non-bio waste</b> at the source for effective waste management!</p>"
+    ],
+    # 🔹 COMPOSTING GUIDE
+    "composting_guide": [
+        "<p>🌱 <b>Composting Guide: Convert Kitchen Waste into Fertilizer!</b></p>"
+        "<ol>"
+        "<li>1️⃣ Collect <b>fruit & vegetable peels, eggshells, coffee grounds</b>.</li>"
+        "<li>2️⃣ Avoid adding <b>meat, dairy, and oily foods</b> to compost.</li>"
+        "<li>3️⃣ Mix <b>dry materials</b> (leaves, shredded paper) for a good balance.</li>"
+        "<li>4️⃣ Keep it <b>moist but not too wet</b> to allow microbial activity.</li>"
+        "<li>5️⃣ Turn the compost pile <b>every few days</b> to speed up decomposition.</li>"
+        "<li>6️⃣ Within a few weeks, you'll have <b>rich organic fertilizer</b> for your garden!</li>"
+        "</ol>"
+    ],
+    # 🔹 RECYCLING TIPS
+    "recycling_tips": [
+        "<p>♻ <b>Recycling Do’s and Don’ts:</b></p>"
+        "<ul>"
+        "<li>✅ <b>DO:</b> Rinse out bottles & cans before recycling.</li>"
+        "<li>✅ <b>DO:</b> Separate paper, plastic, and metal waste.</li>"
+        "<li>✅ <b>DO:</b> Flatten cardboard boxes to save space.</li>"
+        "<li>❌ <b>DON’T:</b> Recycle dirty or greasy food containers (like pizza boxes).</li>"
+        "<li>❌ <b>DON’T:</b> Mix hazardous waste (batteries, electronics) with regular trash.</li>"
+        "</ul>"
+        "<p>💡 <b>Tip:</b> Always check your local recycling guidelines for the best practices!</p>"
+    ],
+
+    # 🔹 GOVERNMENT & ENVIRONMENTAL REGULATIONS
+    "government_regulations": [
+        "<p>🌍 <b>Environmental Regulations on Waste Management:</b></p>"
+        "<ol>"
+        "<li>1️⃣ Governments enforce <b>strict laws</b> on waste disposal to reduce pollution.</li>"
+        "<li>2️⃣ Companies must comply with <b>eco-friendly waste disposal guidelines</b>.</li>"
+        "<li>3️⃣ Many countries <b>ban single-use plastics</b> to cut down on plastic waste.</li>"
+        "<li>4️⃣ Some regions <b>charge fines</b> for improper waste disposal.</li>"
+        "<li>5️⃣ <b>Recycling incentives</b> are offered in many places – check with your local authorities!</li>"
+        "</ol>"
+        "<p>🌱 <b>Protect the planet</b> by following responsible waste management laws!</p>"
+    ],
+
+    # 🔹 AI MODEL EXPLANATION
+    "ai_model_explanation": [
+        "<p>🤖 <b>How does the AI model work?</b></p>"
+        "<ol>"
+        "<li>1️⃣ The model is built using <b>Keras (TensorFlow)</b> with a <b>DepthwiseConv2D CNN</b> architecture.</li>"
+        "<li>2️⃣ It processes images and predicts whether the waste is <b>bio-degradable</b> or <b>non-bio-degradable</b>.</li>"
+        "<li>3️⃣ Uses <b>224x224 pixel images</b> as input, normalizes them, and runs inference.</li>"
+        "<li>4️⃣ The prediction is based on <b>confidence scores</b> for each waste category.</li>"
+        "<li>5️⃣ <b>Continuous Learning:</b> The model improves over time with new training data.</li>"
+        "</ol>"
+        "<p>💡 <b>AI-powered waste classification</b> helps in <b>efficient & smart waste disposal!</b></p>"
+    ],
+
+    # 🔹 ADVANCED TROUBLESHOOTING
+    "advanced_troubleshooting": [
+        "<p>⚠ <b>Troubleshooting Common Issues:</b></p>"
+        "<p>🛠 <b>Flask Server Issues:</b></p>"
+        "<ul>"
+        "<li>Run <code>flask run --port 5001</code> if port 5000 is occupied.</li>"
+        "<li>Check if <code>waste_management.db</code> is accessible.</li>"
+        "</ul>"
+        "<p>🔧 <b>Model Prediction Errors:</b></p>"
+        "<ul>"
+        "<li>Ensure <code>keras_model.h5</code> exists in the correct directory.</li>"
+        "<li>Run <code>pip install tensorflow keras opencv-python</code> to install dependencies.</li>"
+        "</ul>",
+        "<p>📂 <b>File Upload Issues:</b></p>"
+        "<ul>"
+        "<li>Ensure uploaded files are in supported formats (<code>.jpg</code>, <code>.png</code>, <code>.mp4</code>).</li>"
+        "<li>If files don’t upload, check Flask’s <code>UPLOAD_FOLDER</code> path.</li>"
+        "</ul>"
+    ],
+
+    # 🔹 REPORT GENERATION & CSV EXPLANATION
+    "report_csv_details": [
+        "<p>📄 <b>Understanding Reports & CSV Logs:</b></p>"
+        "<p>✅ <b>The PDF report contains:</b></p>"
+        "<ul>",
+        "<li>📜 <b>Classification logs</b></li>"
+        "<li>📊 <b>Waste segregation statistics</b></li>"
+        "<li>📈 <b>Pie & Bar Charts</b> showing waste trends.</li>"
+        "</ul>",
+        "<p>📊 <b>CSV Logs:</b></p>"
+        "<ul>",
+        "<li>📂 Download <b>CSV logs</b> to view raw data.</li>"
+        "<li>📊 Open CSV files in <b>Excel/Google Sheets</b> for analysis.</li>"
+        "</ul>",
+        "<p>📥 <b>Download options:</b> Click <b>‘Download Logs’</b> or <b>‘Generate Report’</b> in the <b>Logs</b> tab.</p>"
+    ],
+
+    "waste_trends_insights": [
+        "<p>📊 <b>Waste Collection Trends & Insights:</b></p>"
+        "<ol>",
+        "<li>1️⃣ <b>Monthly trends</b> show seasonal variations in waste disposal.</li>"
+        "<li>2️⃣ A high <b>non-bio-degradable percentage</b> may indicate plastic overuse.</li>"
+        "<li>3️⃣ Sudden <b>spikes in waste data</b> may indicate festivals or public events.</li>"
+        "<li>4️⃣ <b>Long-term data</b> helps predict future waste trends.</li>"
+        "</ol>",
+        "<p>📈 <b>Check the Dashboard</b> for real-time analytics!</p>"
+    ],
+
+    # 🔹 SMART WASTE DISPOSAL SOLUTIONS
+    "smart_waste_solutions": [
+        "<p>💡 <b>Smart Waste Disposal Solutions:</b></p>"
+        "<ul>",
+        "<li>✅ <b>AI-based waste bins</b> automatically sort waste into <b>bio/non-bio</b> categories.</li>"
+        "<li>✅ <b>IoT Sensors</b> detect waste levels in bins and optimize garbage collection routes.</li>"
+        "<li>✅ <b>Reverse Vending Machines</b> allow users to recycle plastic bottles for rewards.</li>"
+        "</ul>",
+        "<p>🌍 <b>Technology is transforming waste management – be a part of the change!</b></p>"
+    ],
+
+    "enhanced_patterns": [
+        "<p>💬 <b>You can ask things like:</b></p>",
+        "<ul>",
+        "<li>❓ <b>How to predict waste?</b></li>",
+        "<li>🖼️ <b>Can I classify images?</b></li>",
+        "<li>📈 <b>Show me waste trends</b></li>",
+        "<li>📜 <b>Where can I see past logs?</b></li>",
+        "<li>📧 <b>Send report to my email</b></li>",
+        "<li>🤖 <b>How does the AI model work?</b></li>",
+        "<li>🗄️ <b>What is the database used?</b></li>",
+        "<li>📊 <b>Can I get a CSV log?</b></li>",
+        "</ul>"
+    ],
+
+    "default": [
+        "<p>🤔 I'm not sure how to answer that. Please rephrase your question or refer to the documentation.</p>",
+        "<p>❓ I don't understand that yet. Try asking something else about <b>WMS</b>!</p>"
+    ]
+
+}
+
+# Define patterns to recognize user questions in different ways
+PATTERN_RESPONSES = {
+    r"(?i)\b(hi|hello|hey)\b": "hello",
+    r"(?i)\b(waste management system|explain wms|tell me about this project|how does this system work)\b": "system_overview",
+    r"(?i)\b(backend|server|flask|database|model|api|how does the backend work)\b": "backend_functionality",
+    r"(?i)\b(frontend|ui|react|dashboard|features|how does the frontend work)\b": "frontend_structure",
+    r"(?i)\b(how to use|usage|how do i use this system|how can i classify waste)\b": "how_to_use",
+    r"(?i)\b(logs)\b": "logs",
+    r"(?i)\b(records)\b": "records",
+    r"(?i)\b(download report)\b": "download_report",
+    r"(?i)\b(csv|export csv|download logs)\b": "csv_logs",
+    r"(?i)\b(pdf|generate pdf|waste report)\b": "pdf_reports",
+    r"(?i)\b(generate report|download report|get pdf report|create report)\b": "generate_report",
+    r"(?i)\b(how to get logs|retrieve logs|fetch logs)\b": "how_to_get_logs",
+    r"(?i)\b(send email|email report|mail report|send waste report|email|emails)\b": "send_email",
+    r"(?i)\b(how to send email|email process|how to mail report)\b": "how_to_send_email",
+    r"(?i)\b(email sent|status of email|report email status)\b": "email_status",
+    r"(?i)\b(waste collected|waste data|how much waste)\b": "waste_collected",
+    r"(?i)\b(waste on \d{4}-\d{2}-\d{2}|waste collected on)\b": "waste_on_date",
+    r"(?i)\b(waste between \d{1,2} (AM|PM) and \d{1,2} (AM|PM)|waste in time range|waste during)\b": "waste_in_time_range",
+    r"(?i)\b(bio waste|non-bio waste|segregation data|bio and non-bio waste collected)\b": "bio_nonbio_waste",
+    r"(?i)\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b": "waste_on_weekday",
+    r"(?i)\b(email failed|could not send email|email error|why is email not sent)\b": "email_error",
+    r"(?i)\b(real-time|live|webcam|camera|how does real-time prediction work)\b": "real_time_prediction",
+    r"(?i)\b(predict waste|classify images|show trends|get logs|email report|ai model|database|csv log)\b": "enhanced_patterns",
+    r"(?i)\b(deploy|installation|hosting|how to run)\b": "deployment",
+    r"(?i)\b(waste management tips|waste handling|best practices)\b": "waste_management_best_practices",
+    r"(?i)\b(composting|how to compost|food waste compost)\b": "composting_guide",
+    r"(?i)\b(recycling|how to recycle|recycling tips)\b": "recycling_tips",
+    r"(?i)\b(government rules|waste regulations|laws on waste)\b": "government_regulations",
+    r"(?i)\b(how does ai work|ai model|machine learning model)\b": "ai_model_explanation",
+    r"(?i)\b(report details|csv logs|how to read reports)\b": "report_csv_details",
+    r"(?i)\b(trends insights|waste trends|data analytics)\b": "waste_trends_insights",
+    r"(?i)\b(smart waste|waste technology|ai for waste)\b": "smart_waste_solutions",
+    r"(?i)\b(troubleshoot|fix errors|debugging issues)\b": "advanced_troubleshooting",
+    r"(?i)\b(error|crash|not working|troubleshoot|debug)\b": "troubleshooting",
+    r"(?i)\b(security|authentication|restrict access|protect data)\b": "security",
+    r"(?i)\b(analytics|report|data visualization|trends)\b": "data_analysis",
+    r"(?i)\b(total waste|how much total waste|total waste collected)\b": "total_waste",
+    r"(?i)\b(bio vs non-bio|percentage of bio waste|waste percentage|bio and non-bio percentage)\b": "waste_percentage",
+    r"(?i)\b(waste trend|trend over time|waste trends|classification trends)\b": "waste_trend",
+    r"(?i)\b(waste trend in \w+ \d{4}|waste collected in \w+ \d{4})\b": "waste_trend_specific_month"
+}
 
 
 
@@ -123,6 +565,72 @@ except Exception as e:
     logging.error(f"Error loading labels: {e}")
     exit()
 
+def convert_google_drive_link(url):
+    """
+    Converts a Google Drive file link to a direct download link.
+    """
+    match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", url)
+    if match:
+        file_id = match.group(1)
+        return f"https://drive.google.com/uc?export=download&id={file_id}"
+    return url  # Return original if not a Drive link
+
+def download_image(image_url, filename):
+    """
+    Downloads an image from a URL (Google Drive/Photos) and ensures it's a valid image.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    image_url = convert_google_drive_link(image_url)  # Convert Drive link to direct link
+
+    try:
+        response = requests.get(image_url, headers=headers, stream=True)
+        if response.status_code != 200:
+            print(f"❌ Failed to download image. HTTP Status: {response.status_code}")
+            return None
+
+        # Read response content
+        image_bytes = io.BytesIO(response.content)
+        
+        # Validate if it's a real image
+        try:
+            image = Image.open(image_bytes).convert("RGB")
+        except Exception as e:
+            print(f"❌ Error: File is not a valid image - {e}")
+            return None
+
+        # Save image with the provided filename
+        temp_image_path = os.path.join(UPLOAD_FOLDER, filename)
+        image.save(temp_image_path, format="JPEG")
+        return temp_image_path
+
+    except Exception as e:
+        print(f"❌ Error downloading image: {e}")
+        return None
+
+def download_video(video_url, filename):
+    """
+    Downloads a video file from a URL and saves it locally.
+    """
+    headers = {"User-Agent": "Mozilla/5.0"}
+    video_url = convert_google_drive_link(video_url)  # Convert Drive link to direct link
+
+    try:
+        response = requests.get(video_url, headers=headers, stream=True)
+        if response.status_code != 200:
+            print(f"❌ Failed to download video. HTTP Status: {response.status_code}")
+            return None
+
+        # Save the video locally
+        video_path = os.path.join(UPLOAD_FOLDER, filename)
+        with open(video_path, "wb") as file:
+            for chunk in response.iter_content(chunk_size=1024):
+                file.write(chunk)
+        
+        return video_path
+    except Exception as e:
+        print(f"❌ Error downloading video: {e}")
+        return None
+
 # Function to process and predict the image
 def predict_image(image_path):
     """
@@ -168,7 +676,6 @@ def predict_image(image_path):
         return {"error": str(e)}
 
 
-
 @app.route("/api/realtime_predict", methods=["POST"])
 def realtime_predict():
     """
@@ -204,6 +711,24 @@ def realtime_predict():
         return jsonify({"error": "An error occurred during real-time prediction."}), 500
 
 
+
+def log_to_google_sheets(filename, waste_type, confidence):
+    """
+    Logs waste classification records to Google Sheets.
+
+    Args:
+        filename (str): Name of the file.
+        waste_type (str): Classified waste type.
+        confidence (float): Confidence score of classification.
+    """
+    if sheet:
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            sheet.append_row([filename, waste_type, confidence, timestamp])
+            print(f"✅ Logged to Google Sheets: {filename}, {waste_type}, {confidence}")
+        except Exception as e:
+            print(f"❌ Error logging to Google Sheets: {e}")
+
 # Function to save prediction results in SQLite
 def save_record(filename, waste_type, confidence):
     conn = sqlite3.connect(DB_PATH)
@@ -216,63 +741,169 @@ def save_record(filename, waste_type, confidence):
     conn.commit()
     conn.close()
 
+    log_to_google_sheets(filename, waste_type, confidence)
+
+@app.route("/api/google_sheets_logs", methods=["GET"])
+def get_google_sheets_logs():
+    """
+    Fetches logs from Google Sheets and returns them as JSON.
+    """
+    if not sheet:
+        return jsonify({"error": "Google Sheets connection failed"}), 500
+
+    try:
+        data = sheet.get_all_records()
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": f"Error fetching logs from Google Sheets: {e}"}), 500
+
+def authenticate_google_drive():
+    """
+    Authenticates Google Drive using a service account.
+    Returns a GoogleDrive object for file operations.
+    """
+    try:
+        gauth = GoogleAuth()
+
+        # Use Service Account JSON credentials for Google Drive
+        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
+            GAUTH_CREDENTIALS_FILE,
+            ["https://www.googleapis.com/auth/drive"]
+        )
+
+        drive = GoogleDrive(gauth)
+        print("✅ Successfully authenticated with Google Drive!")
+        return drive
+    except Exception as e:
+        print(f"❌ Google Drive Authentication Failed: {e}")
+        return None
+
+# Initialize Google Drive authentication
+drive = authenticate_google_drive()
+
+def upload_to_drive(filepath, waste_type, is_video_frame=False):
+    """
+    Uploads images or video frames to Google Drive in classified subfolders.
+
+    Args:
+        filepath (str): Path to image file.
+        waste_type (str): "Bio-Degradable" or "Non-Bio-Degradable".
+        is_video_frame (bool): True if the image is a video frame.
+
+    Returns:
+        str: Google Drive file link.
+    """
+    try:
+        # Use separate Google Drive folders for video frames
+        if is_video_frame:
+            folder_id = FOLDER_BIO if waste_type == "Bio-Degradable" else FOLDER_NONBIO
+        else:
+            folder_id = FOLDER_BIO if waste_type == "Bio-Degradable" else FOLDER_NONBIO
+
+        file_drive = drive.CreateFile({'title': os.path.basename(filepath), 'parents': [{'id': folder_id}]})
+        file_drive.SetContentFile(filepath)
+        file_drive.Upload()
+        return f"https://drive.google.com/file/d/{file_drive['id']}/view"
+    except Exception as e:
+        logging.error(f"Google Drive Upload Error: {e}")
+        return None
+
+
 @app.route("/api/predict", methods=["POST"])
 def predict():
+    """
+    Unified prediction function for both file uploads and Google Drive/Photos links.
+    """
     try:
-        if "file" not in request.files:
-            logging.error("No file uploaded in request.")
-            return jsonify({"error": "No file uploaded"}), 400
+        image_path = None
 
-        file = request.files["file"]
-        if file.filename == "":
-            logging.error("No file selected for upload.")
-            return jsonify({"error": "No file selected"}), 400
+        # Check if a file is uploaded
+        if "file" in request.files:
+            file = request.files["file"]
+            if file.filename == "":
+                return jsonify({"error": "No file selected"}), 400
 
-        logging.info(f"File received: {file.filename}")
+            filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+            image_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
 
-        # Generate unique filename to avoid conflicts
-        filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
-        temp_file_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            file.save(image_path)
+            logging.info(f"✅ File saved temporarily at: {image_path}")
 
-        # Save the file temporarily
-        file.save(temp_file_path)
-        logging.info(f"File saved temporarily at: {temp_file_path}")
+        # Check if a Google Drive/Photos link is provided
+        elif "url" in request.json:
+            image_url = request.json["url"]
+            if not ("drive.google.com" in image_url or "photos.google.com" in image_url):
+                return jsonify({"error": "Invalid Google Drive/Photos link."}), 400
 
-        # Predict waste type
-        result = predict_image(temp_file_path)
-        logging.info(f"Prediction result: {result}")
+            # Generate filename in the format image_from_link_YYYYMMDDHHMMSS.jpg
+            filename = f"image_from_link_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
 
-        if "bio" in result and "nonBio" in result:
-            waste_class = "Bio-Degradable" if result["bio"] > result["nonBio"] else "Non-Bio-Degradable"
-            confidence_score = max(result["bio"], result["nonBio"])
-
-            # Save the result in the database
-            save_record(filename, waste_class, confidence_score)
-
-            response_data = {
-                "class": waste_class,
-                "bio": result["bio"],
-                "nonBio": result["nonBio"],
-                "confidence_score": confidence_score
-            }
-
-            logging.info(f"Prediction saved to database: {response_data}")
+            # Download the image
+            image_path = download_image(image_url, filename)
+            if not image_path:
+                return jsonify({"error": "Failed to download image."}), 500
 
         else:
-            logging.error("Invalid prediction response format.")
-            return jsonify({"error": "Prediction failed. Invalid response format."}), 500
+            return jsonify({"error": "No file or valid URL provided"}), 400
+
+        # Ensure the file exists
+        if not os.path.exists(image_path):
+            return jsonify({"error": "File saving failed!"}), 500
+
+        # Predict waste type using AI Model
+        logging.info("🧠 Running waste classification model...")
+        result = predict_image(image_path)
+        logging.info(f"📊 Prediction result: {result}")
+
+        if "error" in result:
+            logging.error(f"❌ Prediction error: {result['error']}")
+            return jsonify({"error": result["error"]}), 500
+
+        # Determine waste classification
+        waste_class = "Bio-Degradable" if result["bio"] > result["nonBio"] else "Non-Bio-Degradable"
+        confidence_score = max(result["bio"], result["nonBio"])
+
+        # ✅ Save Record in Database
+        save_record(filename, waste_class, confidence_score)
+
+        # ✅ Prepare Response
+        response_data = {
+            "class": waste_class,
+            "bio": result["bio"],
+            "nonBio": result["nonBio"],
+            "confidence_score": confidence_score
+        }
+        logging.info(f"✅ Prediction saved: {response_data}")
+
+        # ✅ Start background thread for Google Drive upload
+        threading.Thread(target=upload_image_to_drive, args=(image_path, waste_class)).start()
+
+        return jsonify(response_data)
 
     except Exception as e:
-        logging.error(f"Error processing file: {e}")
-        return jsonify({"error": "An error occurred during processing."}), 500
+        logging.error(f"❌ Error processing file: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
+
+
+
+def upload_image_to_drive(image_path, waste_class):
+    """
+    Asynchronously uploads the image to Google Drive in the background.
+    This ensures faster predictions by uploading the image separately.
+    """
+    try:
+        logging.info(f"⏳ Uploading {image_path} to Google Drive...")
+        google_drive_link = upload_to_drive(image_path, waste_class)
+        logging.info(f"✅ Uploaded to Google Drive: {google_drive_link}")
+    except Exception as e:
+        logging.error(f"❌ Error uploading {image_path} to Google Drive: {e}")
 
     finally:
-        # Ensure cleanup of temporary file even in case of exceptions
-        if os.path.exists(temp_file_path):
-            os.remove(temp_file_path)
-            logging.info(f"Temporary file {temp_file_path} deleted.")
+        # ✅ Remove Local Temporary File (after upload)
+        if os.path.exists(image_path):
+            os.remove(image_path)
+            logging.info(f"🗑️ Local file {image_path} deleted.")
 
-    return jsonify(response_data)
 
 # Prediction Function
 def predict_frame(image_path):
@@ -311,86 +942,140 @@ def extract_frames(video_path, output_folder, frame_interval=30):
 
 @app.route("/api/predict_video", methods=["POST"])
 def predict_video():
-    if "file" not in request.files:
-        return jsonify({"error": "No video uploaded"}), 400
+    """
+    Unified function to predict waste from either a video file or a Google Drive link.
+    """
+    video_path = None  # Initialize video path variable
 
-    file = request.files["file"]
-    if file.filename == "":
-        return jsonify({"error": "No file selected"}), 400
+    try:
+        # **1️⃣ Check if a file is uploaded**
+        if "file" in request.files:
+            file = request.files["file"]
+            if file.filename == "":
+                return jsonify({"error": "No file selected"}), 400
 
-    # Save uploaded video
-    video_path = os.path.join(app.config["UPLOAD_FOLDER"], file.filename)
-    file.save(video_path)
-    print(f"📂 Video saved at: {video_path}")
+            # Save the uploaded video file
+            filename = f"{datetime.now().strftime('%Y%m%d%H%M%S')}_{file.filename}"
+            video_path = os.path.join(app.config["UPLOAD_FOLDER"], filename)
+            file.save(video_path)
+            logging.info(f"📂 Video saved at: {video_path}")
 
-    # Extract frames
-    frames_folder = os.path.join(app.config["UPLOAD_FOLDER"], "frames")
-    os.makedirs(frames_folder, exist_ok=True)
-    frame_files = extract_frames(video_path, frames_folder, frame_interval=30)
+        # **2️⃣ Check if a Google Drive link is provided**
+        elif "url" in request.json:
+            video_url = request.json["url"]
 
-    if not frame_files:
-        print("⚠️ No frames extracted!")
-        return jsonify({"error": "Failed to extract frames from video"}), 500
+            # Validate Google Drive or Photos link
+            if not ("drive.google.com" in video_url or "photos.google.com" in video_url):
+                return jsonify({"error": "Invalid Google Drive/Photos link."}), 400
 
-    predictions = []
-    bio_count = 0
-    non_bio_count = 0
+            # Generate a filename for the downloaded video
+            filename = f"video_from_link_{datetime.now().strftime('%Y%m%d%H%M%S')}.mp4"
 
-    for frame_path in frame_files:
-        print(f"🖼 Processing frame: {frame_path}")
-        result = predict_image(frame_path)
+            video_path = download_video(video_url, filename)
+            if not video_path:
+                return jsonify({"error": "Failed to download video."}), 500
+            logging.info(f"✅ Video downloaded and saved at: {video_path}")
 
-        if "error" in result:
-            print(f"⚠️ Prediction failed for {frame_path}")
-            continue
-
-        waste_class = "Bio-Degradable" if result["bio"] > result["nonBio"] else "Non-Bio-Degradable"
-        confidence_score = max(result["bio"], result["nonBio"])
-
-        # Count classification types
-        if waste_class == "Bio-Degradable":
-            bio_count += 1
         else:
-            non_bio_count += 1
+            return jsonify({"error": "No file or valid URL provided"}), 400
 
-        # Save prediction to the database
-        save_record(os.path.basename(frame_path), waste_class, confidence_score)
+        # **3️⃣ Extract frames from the video**
+        frames_folder = os.path.join(app.config["UPLOAD_FOLDER"], "frames")
+        os.makedirs(frames_folder, exist_ok=True)
+        frame_files = extract_frames(video_path, frames_folder, frame_interval=30)
 
-        # Load the frame for drawing
-        frame = cv2.imread(frame_path)
-        if frame is None:
-            print(f"⚠️ Failed to read image {frame_path}")
-            continue
+        if not frame_files:
+            logging.error("⚠️ No frames extracted from the video!")
+            return jsonify({"error": "Failed to extract frames from video"}), 500
 
-        # Draw Prediction on Frame
-        label = f"{waste_class} ({confidence_score:.2f})"
-        color = (0, 255, 0) if waste_class == "Bio-Degradable" else (0, 0, 255)
-        cv2.putText(frame, label, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+        predictions = []
+        bio_count = 0
+        non_bio_count = 0
+        drive_upload_queue = []  # Store frames to upload later
 
-        # Save Processed Frame
-        processed_frame_path = os.path.join(PROCESSED_FOLDER, os.path.basename(frame_path))
-        cv2.imwrite(processed_frame_path, frame)
-        print(f"✅ Processed frame saved at: {processed_frame_path}")
+        for frame_path in frame_files:
+            logging.info(f"🖼 Processing frame: {frame_path}")
+            result = predict_image(frame_path)
 
-        predictions.append({
-            "frame": f"/processed_frames/{os.path.basename(frame_path)}",
-            "class": waste_class,
-            "confidence": confidence_score
+            if "error" in result:
+                logging.warning(f"⚠️ Prediction failed for {frame_path}")
+                continue
+
+            # Classify waste type
+            waste_class = "Bio-Degradable" if result["bio"] > result["nonBio"] else "Non-Bio-Degradable"
+            confidence_score = max(result["bio"], result["nonBio"])
+
+            # Count classification types
+            if waste_class == "Bio-Degradable":
+                bio_count += 1
+            else:
+                non_bio_count += 1
+
+            # Save prediction to the database
+            save_record(os.path.basename(frame_path), waste_class, confidence_score)
+
+            # Add to upload queue (upload later in background)
+            drive_upload_queue.append((frame_path, waste_class))
+
+            # Load the frame for annotation
+            frame = cv2.imread(frame_path)
+            if frame is None:
+                logging.warning(f"⚠️ Failed to read image {frame_path}")
+                continue
+
+            # Draw Prediction on Frame
+            label = f"{waste_class} ({confidence_score:.2f})"
+            color = (0, 255, 0) if waste_class == "Bio-Degradable" else (0, 0, 255)
+            cv2.putText(frame, label, (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+
+            # Save Processed Frame
+            processed_frame_path = os.path.join(PROCESSED_FOLDER, os.path.basename(frame_path))
+            cv2.imwrite(processed_frame_path, frame)
+            logging.info(f"✅ Processed frame saved at: {processed_frame_path}")
+
+            predictions.append({
+                "frame": f"/processed_frames/{os.path.basename(frame_path)}",
+                "class": waste_class,
+                "confidence": confidence_score
+            })
+
+        # Compute percentage of bio and non-bio frames
+        total_frames = bio_count + non_bio_count
+        bio_percentage = (bio_count / total_frames) * 100 if total_frames > 0 else 0
+        non_bio_percentage = (non_bio_count / total_frames) * 100 if total_frames > 0 else 0
+
+        # ✅ Remove local video file after processing
+        if os.path.exists(video_path):
+            os.remove(video_path)
+            logging.info(f"🗑 Video file {video_path} deleted.")
+
+        # ✅ Start a background thread to upload images to Google Drive
+        threading.Thread(target=upload_frames_to_drive, args=(drive_upload_queue,)).start()
+
+        return jsonify({
+            "predictions": predictions,
+            "bio_percentage": bio_percentage,
+            "non_bio_percentage": non_bio_percentage
         })
 
-    # Compute percentage of bio and non-bio frames
-    total_frames = bio_count + non_bio_count
-    bio_percentage = (bio_count / total_frames) * 100 if total_frames > 0 else 0
-    non_bio_percentage = (non_bio_count / total_frames) * 100 if total_frames > 0 else 0
+    except Exception as e:
+        logging.error(f"❌ Error processing video: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
 
-    # Cleanup: Remove video
-    os.remove(video_path)
 
-    return jsonify({
-        "predictions": predictions,
-        "bio_percentage": bio_percentage,
-        "non_bio_percentage": non_bio_percentage
-    })
+
+def upload_frames_to_drive(frame_queue):
+    """
+    Asynchronously uploads video frames to Google Drive in the background.
+    This ensures that predictions are displayed faster while Drive upload happens separately.
+    """
+    for frame_path, waste_class in frame_queue:
+        try:
+            print(f"⏳ Uploading {frame_path} to Google Drive...")
+            google_drive_link = upload_to_drive(frame_path, waste_class, is_video_frame=True)
+            print(f"✅ Uploaded to Google Drive: {google_drive_link}")
+        except Exception as e:
+            print(f"❌ Error uploading {frame_path} to Google Drive: {e}")
 
 
 @app.route("/processed_frames/<filename>")
@@ -412,6 +1097,217 @@ def clear_processed_frames():
     except Exception as e:
         logging.error(f"Error clearing processed frames: {e}")
         return jsonify({"error": "Failed to clear processed frames."}), 500
+
+@app.route("/api/waste_data", methods=["GET"])
+def get_waste_data():
+    """
+    Fetch waste data based on date, time, and type.
+    Example Queries:
+    - "How much waste was collected on 2025-02-20?"
+    - "How much bio-degradable and non-bio-degradable waste was collected today?"
+    - "How much waste was collected between 6 PM and 9 PM?"
+    """
+    date = request.args.get("date")  # Format: YYYY-MM-DD
+    start_time = request.args.get("start_time")  # Format: HH:MM (24-hour format)
+    end_time = request.args.get("end_time")  # Format: HH:MM (24-hour format)
+    waste_type = request.args.get("waste_type")  # "Bio-Degradable" or "Non-Bio-Degradable"
+
+    query = "SELECT waste_type, COUNT(*) FROM records WHERE 1=1"
+    params = []
+
+    if date:
+        query += " AND DATE(timestamp) = ?"
+        params.append(date)
+    if start_time and end_time:
+        query += " AND TIME(timestamp) BETWEEN ? AND ?"
+        params.extend([start_time, end_time])
+    if waste_type:
+        query += " AND waste_type = ?"
+        params.append(waste_type)
+
+    query += " GROUP BY waste_type"
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+
+        waste_stats = {row[0]: row[1] for row in results}
+        return jsonify(waste_stats)
+    except Exception as e:
+        logging.error(f"Error fetching waste data: {e}")
+        return jsonify({"error": "An error occurred while retrieving waste data."}), 500
+
+# Helper Functions for API Calls
+def fetch_waste_data(params):
+    """Fetches waste data based on date, time, or waste type, and returns an HTML response."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/waste_data", params=params)
+        data = response.json()
+
+        if "error" in data:
+            return f"<p style='color:red;'>❌ <b>Error:</b> {data['error']}</p>"
+        if not data:
+            return "<p style='color:gray;'>📉 <b>No waste data</b> found for the given period.</p>"
+
+        # Initialize response message
+        response_msg = "<div style='font-size: 14px; padding: 10px;'>"
+        response_msg += "<p>📊 <b>Waste Collection Data:</b></p>"
+
+        if "date" in params:
+            response_msg += f"<p>📅 <b>Date:</b> {params['date']}</p>"
+        if "start_time" in params and "end_time" in params:
+            response_msg += f"<p>⏰ <b>Time Range:</b> {params['start_time']} - {params['end_time']}</p>"
+        if "waste_type" in params:
+            response_msg += f"<p>♻ <b>Waste Type:</b> {params['waste_type']}</p>"
+
+        # List waste data
+        response_msg += "<ul>"
+        for waste_type, count in data.items():
+            response_msg += f"<li> <b>{waste_type}:</b> {count} items</li>"
+        response_msg += "</ul>"
+
+        response_msg += "</div>"  # Close div
+        return response_msg
+
+    except Exception as e:
+        return f"<p style='color:red;'>⚠️ <b>Error fetching waste data:</b> {str(e)}</p>"
+
+
+
+def fetch_total_waste():
+    """Fetches total waste collected count."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/stats")
+        data = response.json()
+        total_waste = sum(data.values())
+        return f"📊 **Total Waste Collected**: {total_waste} items"
+    except Exception as e:
+        return f"⚠️ Error fetching total waste data: {str(e)}"
+
+def fetch_waste_trend():
+    """Fetches waste trends over time."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/trends")
+        data = response.json()
+
+        response_msg = "📈 **Waste Collection Trend Over Time:**\n"
+        for trend in data:
+            response_msg += f"📅 {trend['month']}: {trend['count']} items\n"
+
+        return response_msg
+    except Exception as e:
+        return f"⚠️ Error fetching waste trend data: {str(e)}"
+
+def fetch_waste_percentage():
+    """Fetches bio vs non-bio waste percentage."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/stats")
+        data = response.json()
+
+        bio_count = data.get("Bio-Degradable", 0)
+        non_bio_count = data.get("Non-Bio-Degradable", 0)
+        total_waste = bio_count + non_bio_count
+
+        bio_percentage = (bio_count / total_waste) * 100 if total_waste > 0 else 0
+        non_bio_percentage = (non_bio_count / total_waste) * 100 if total_waste > 0 else 0
+
+        return f"📊 **Waste Type Distribution:**\n♻ **Bio-Degradable**: {bio_percentage:.2f}% ({bio_count} items)\n🚯 **Non-Bio-Degradable**: {non_bio_percentage:.2f}% ({non_bio_count} items)"
+    except Exception as e:
+        return f"⚠️ Error fetching waste percentage data: {str(e)}"
+
+@app.route("/api/waste_by_weekday", methods=["GET"])
+def get_waste_by_weekday():
+    """
+    Fetch waste data for a specific weekday (Monday-Sunday).
+    Example Query:
+    - "How much waste was collected on Monday?"
+    """
+    weekday = request.args.get("weekday")  # Expects values like "Monday", "Tuesday" etc.
+
+    if not weekday:
+        return jsonify({"error": "Please specify a weekday (e.g., Monday, Tuesday)."}), 400
+
+    # Convert weekday to a number (Monday = 0, Sunday = 6)
+    weekday_map = {
+        "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
+        "Friday": 4, "Saturday": 5, "Sunday": 6
+    }
+
+    if weekday not in weekday_map:
+        return jsonify({"error": "Invalid weekday provided."}), 400
+
+    weekday_number = weekday_map[weekday]
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT waste_type, COUNT(*) 
+                FROM records 
+                WHERE strftime('%w', timestamp) = ? 
+                GROUP BY waste_type
+            ''', (str(weekday_number),))
+            results = cursor.fetchall()
+
+        if not results:
+            return jsonify({"message": f"No waste data found for {weekday}."})
+
+        waste_stats = {row[0]: row[1] for row in results}
+        return jsonify({
+            "date": weekday,
+            "waste_data": waste_stats
+        })
+    
+    except Exception as e:
+        logging.error(f"Error fetching waste data for {weekday}: {e}")
+        return jsonify({"error": "An error occurred while retrieving waste data."}), 500
+
+def fetch_waste_by_weekday(weekday):
+    """Fetches waste data by weekday."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/waste_by_weekday", params={"weekday": weekday})
+        data = response.json()
+
+        response_msg = f"🗑 Waste Collection Data for {weekday}:\n"
+        for waste_type, count in data["waste_data"].items():
+            response_msg += f"🔹 {waste_type}: {count} items\n"
+
+        return response_msg
+    except Exception as e:
+        return f"⚠️ Error fetching waste data for {weekday}: {str(e)}"
+
+def fetch_monthly_waste_trend(month_year):
+    """Fetches waste stats for a specific month and year."""
+    try:
+        response = requests.get("http://127.0.0.1:5000/api/filter_records", params={"month": month_year})
+        data = response.json()
+
+        if "error" in data:
+            return f"❌ Error: {data['error']}"
+        if not data:
+            return f"📉 No waste data found for {month_year}."
+
+        # Count waste types
+        bio_count = sum(1 for record in data if record["waste_type"] == "Bio-Degradable")
+        non_bio_count = sum(1 for record in data if record["waste_type"] == "Non-Bio-Degradable")
+        total_waste = bio_count + non_bio_count
+
+        response_msg = f"📊 Waste Stats for {month_year}:\n"
+        response_msg += f"♻ Bio-Degradable: {bio_count} items\n"
+        response_msg += f"🚯 Non-Bio-Degradable: {non_bio_count} items\n"
+        response_msg += f"🔹 Total Waste: {total_waste} items"
+
+        return response_msg
+    except Exception as e:
+        return f"⚠️ Error fetching monthly waste data: {str(e)}"
+
+
+def generate_report_link():
+    """Returns a properly formatted clickable report download link using HTML."""
+    return "📄 <b>Generating Report...</b> Please wait.<br>✅ <a href='http://127.0.0.1:5000/api/download_report' target='_blank'>Click here to download the report</a>"
+
 
 # API route to retrieve records
 @app.route("/api/records", methods=["GET"])
@@ -524,47 +1420,19 @@ def download_report_with_proper_spacing():
     elements = []
     styles = getSampleStyleSheet()
 
-    # Title Section
-    title = Paragraph("<b>Waste Management System</b>", styles['Title'])
-    subtitle_style = styles['Normal']
-    subtitle_style.alignment = TA_CENTER  # Center align the subtitle
-    subtitle = Paragraph(
-        f"Report generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        subtitle_style
-    )
-    elements.append(title)
-    elements.append(subtitle)
-    elements.append(Spacer(1, 20))
-
-    # Fetch data from the database
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute('SELECT filename, waste_type, confidence, timestamp FROM records')
-    records = cursor.fetchall()
 
-    # Table Headers and Data
-    data = [['Filename', 'Type', 'Confidence', 'Timestamp']]  # Header row
-    for record in records:
-        truncated_filename = record[0][:10] + "..." if len(record[0]) > 20 else record[0]
-        data.append([truncated_filename, record[1], f"{record[2]:.2f}", record[3]])
+    # Create a centered style for the title
+    centered_title_style = ParagraphStyle(
+        name="CenteredTitle",
+        parent=styles["Title"],
+        alignment=TA_CENTER  # Center-align the title
+    )
 
-    # Create Table
-    table = Table(data, colWidths=[200, 100, 80, 120])
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    elements.append(table)
-    elements.append(PageBreak())  # Add a page break before analytics
-
-    # Analytics Section
-    analytics_title = Paragraph("<b>Analytics and Insights</b>", styles['Title'])
-    elements.append(analytics_title)
+    # Create the title with the new centered style
+    title = Paragraph("<b>WMS Report</b>", centered_title_style)
+    elements.append(title)
     elements.append(Spacer(1, 20))
 
     # Calculate bio_count, non_bio_count, and percentages
@@ -722,6 +1590,43 @@ def download_report_with_proper_spacing():
     # Add the chart to the drawing and append it to the elements
     drawing_scatter.add(scatter_chart)
     elements.append(drawing_scatter)
+    elements.append(PageBreak()) 
+
+    # Analytics Section
+    analytics_title = Paragraph("<b>Waste Collected</b>", styles['Title'])
+    elements.append(analytics_title)
+    elements.append(Spacer(1, 20))
+
+    # Fetch data from the database
+    cursor.execute('SELECT filename, waste_type, confidence, timestamp FROM records')
+    records = cursor.fetchall()
+
+    # Table Headers and Data
+    data = [['SI No', 'Filename', 'Type', 'Confidence', 'Timestamp']]  # Header row
+
+    # Add serial numbers
+    for index, record in enumerate(records, start=1):  # Start serial numbers from 1
+        truncated_filename = record[0][:10] + "..." if len(record[0]) > 20 else record[0]
+        data.append([index, truncated_filename, record[1], f"{record[2]:.2f}", record[3]])
+
+    # Create Table with Adjusted Column Widths
+    table = Table(data, colWidths=[50, 200, 100, 80, 120])  # Added space for SI No column
+
+    # Apply Table Styling
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('GRID', (0, 0), (-1, -1), 1, colors.black)
+    ]))
+
+    # Append Table to Report
+    elements.append(table)
+    elements.append(PageBreak())  # Add a page break after the table
+
 
     # Finalize PDF
     doc.build(elements)
@@ -1027,6 +1932,166 @@ def send_report():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+
+def get_chatbot_response(user_query):
+    """
+    Matches the user query with predefined responses and fetches real-time waste data.
+    Converts JSON API responses into human-readable messages using a switch-case dictionary.
+    """
+    user_query = user_query.lower().strip()
+
+    # Extract date, time, weekday, and waste type from query
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2}|today|yesterday)\b", user_query)
+    time_match = re.search(r"between (\d{1,2} (AM|PM)) and (\d{1,2} (AM|PM))", user_query, re.IGNORECASE)
+    weekday_match = re.search(r"\b(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", user_query, re.IGNORECASE)
+    
+    # Enhanced regex to support different ways of asking for monthly stats
+    month_year_match = re.search(r"(waste stats|waste collected|waste trend) (in|for) (\w+) (\d{4})", user_query)
+
+    waste_type = None
+    if "bio waste" in user_query or "bio-degradable" in user_query:
+        waste_type = "Bio-Degradable"
+    elif "non-bio waste" in user_query or "non-bio-degradable" in user_query:
+        waste_type = "Non-Bio-Degradable"
+
+    params = {}
+    if date_match:
+        date_text = date_match.group(1)
+        if date_text.lower() == "today":
+            params["date"] = datetime.today().strftime("%Y-%m-%d")
+        elif date_text.lower() == "yesterday":
+            params["date"] = (datetime.today() - timedelta(days=1)).strftime("%Y-%m-%d")
+        else:
+            params["date"] = date_text
+
+        # ✅ New code: Fetch actual waste collection data
+        try:
+            response = requests.get("http://127.0.0.1:5000/api/waste_data", params=params)
+            data = response.json()
+
+            if "error" in data:
+                return [f"❌ Error: {data['error']}"]
+            if not data:
+                return [f"📉 No waste data found for {params.get('date', 'the given period')}"]
+
+            # ✅ Format the response correctly
+            response_msg = f"📊 Waste Collection Data for {params['date']}:\n"
+            for waste_type, count in data.items():
+                response_msg += f"🔹 {waste_type}: {count} items\n"
+
+            return [response_msg]
+        
+        except Exception as e:
+            return [f"⚠️ Error fetching waste data: {str(e)}"]  
+
+    if time_match:
+        start_hour, start_period = time_match.group(1).split()
+        end_hour, end_period = time_match.group(3).split()
+        start_hour = int(start_hour) + 12 if start_period.upper() == "PM" and int(start_hour) != 12 else int(start_hour)
+        end_hour = int(end_hour) + 12 if end_period.upper() == "PM" and int(end_hour) != 12 else int(end_hour)
+        params["start_time"] = f"{start_hour:02d}:00"
+        params["end_time"] = f"{end_hour:02d}:00"
+
+    if waste_type:
+        params["waste_type"] = waste_type
+
+    
+    # Define a switch-case using a dictionary
+    switch_case = {
+        "waste collected": lambda: fetch_waste_data(params),
+        "total waste": fetch_total_waste,
+        "waste trend": fetch_waste_trend,
+        "bio vs non-bio": fetch_waste_percentage,
+        "waste on weekday": lambda: fetch_waste_by_weekday(weekday_match.group(1)) if weekday_match else "❌ Invalid weekday",
+        "generate report": generate_report_link
+    }
+
+    # Check for specific query types
+    for key, action in switch_case.items():
+        if key in user_query:
+            return [action()]
+
+    # **Handle Monthly Waste Data Queries**
+    if month_year_match:
+        try:
+            month_name, year = month_year_match.group(3), month_year_match.group(4)
+            
+            if not month_name or not year:
+                return ["❌ Invalid query format. Please specify both month and year, e.g., 'Show me waste stats for January 2025'."]
+
+            # Convert month name to numeric format
+            month_mapping = {
+                "january": "01", "february": "02", "march": "03", "april": "04",
+                "may": "05", "june": "06", "july": "07", "august": "08",
+                "september": "09", "october": "10", "november": "11", "december": "12"
+            }
+
+            month_name_lower = month_name.lower()
+
+            if month_name_lower not in month_mapping:
+                return [f"❌ Invalid month: {month_name}. Please enter a valid month (e.g., 'January 2025')."]
+
+            month_numeric = month_mapping[month_name_lower]
+            month_year = f"{year}-{month_numeric}"  # Format: YYYY-MM
+
+            return [fetch_monthly_waste_trend(month_year)]
+        
+        except Exception as e:
+            return [f"⚠️ Error processing month-year query: {str(e)}"]
+
+
+
+    multiline_keys = {
+        "waste_management_best_practices",
+        "composting_guide",
+        "recycling_tips",
+        "government_regulations",
+        "ai_model_explanation",
+        "report_csv_details",
+        "waste_trends_insights",
+        "smart_waste_solutions",
+        "advanced_troubleshooting",
+        "bio_vs_nonbio_detailed",
+    }
+
+    # Handle greetings separately (return one random greeting)
+    if re.search(r"(?i)\b(hi|hello|hey)\b", user_query):
+        return [random.choice(CHATBOT_RESPONSES["hello"])]
+
+    # Check for patterns in user query
+    for pattern, key in PATTERN_RESPONSES.items():
+        if re.search(pattern, user_query, re.IGNORECASE):
+            response_data = CHATBOT_RESPONSES.get(key, ["I'm not sure how to answer that."])
+
+            # ✅ Ensure multiline keys return **all responses as a full concatenated list**
+            if key in multiline_keys and isinstance(response_data, list):
+                return response_data  # **Returns the full list of responses**
+
+            # ✅ Normal responses return a **single random response**
+            elif isinstance(response_data, list):
+                return [random.choice(response_data)]
+
+            # ✅ If response is a string, return it wrapped in a list
+            else:
+                return [response_data]
+
+    # **🔹 Default Response**
+    return ["🤖 I'm not sure how to answer that. Please try rephrasing your question or ask something else about waste management."]
+
+@app.route("/api/chatbot", methods=["POST"])
+def chatbot():
+    data = request.get_json()
+    user_query = data.get("query")
+
+    if not user_query:
+        return jsonify({"error": "No query provided"}), 400
+
+    response_list = get_chatbot_response(user_query)
+    response_text = "\n\n".join(response_list)
+    response = response_list[0]  # Pick the first response
+
+    return jsonify({"response": response})
+
 @app.route("/", defaults={"path": ""})
 @app.route("/<path:path>")
 def serve_react(path):
@@ -1034,6 +2099,5 @@ def serve_react(path):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.template_folder, "index.html")
 
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app.run(debug=True)
