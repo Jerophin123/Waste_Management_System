@@ -59,6 +59,7 @@ from flask import Flask, send_from_directory, render_template
 from werkzeug.utils import secure_filename
 from flask import request, jsonify, send_file
 import base64
+from dotenv import load_dotenv
 
 # Initialize Flask app
 frontend_build_path = os.path.abspath("./frontendbuild-2")
@@ -66,6 +67,8 @@ frontend_build_path = os.path.abspath("./frontendbuild-2")
 app = Flask(__name__, static_folder=frontend_build_path, template_folder=frontend_build_path)
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
+
+load_dotenv()
 
 
 UPLOAD_FOLDER = "uploads"
@@ -80,22 +83,21 @@ app.config["PROCESSED_FOLDER"] = PROCESSED_FOLDER
 
 DB_PATH = "waste_management.db"
 
-SMTP_SERVER = "smtp.gmail.com"  # Change for Outlook, Yahoo, etc.
-SMTP_PORT = 587
-EMAIL_SENDER = "wastemgmtsys@gmail.com"
-EMAIL_PASSWORD = "fnbm vusr rsxe sksu"  # Use App Password if necessary
+# SMTP Email Settings
+SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")  # Use App Password for security
 
-SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_FILE = "service_account.json"  # Replace with your actual JSON credentials file
+# Google API Credentials
+SCOPE = os.getenv("SCOPE").split(",")
+CREDS_FILE = os.getenv("CREDS_FILE")
+GAUTH_CREDENTIALS_FILE = os.getenv("GAUTH_CREDENTIALS_FILE")
 
-# **🔹 Google Drive Authentication (Separate Account)**
-GAUTH_CREDENTIALS_FILE = "drive_service_account.json"  # **Google Drive JSON File**
-
-
-# Google Drive Folder IDs (Replace with your actual IDs)
-PARENT_FOLDER_ID = "1m2CAUmDZoQCLcpB3ZI6HYJQKfnWDdCrq" 
-FOLDER_BIO = "1TXY_-FCJhRqxAyf6s-Vy3xf-CAVST3b8"
-FOLDER_NONBIO = "1cPvb6ZfXkq5-W9bwLB9g08FOPD1dKTAO"
+# Google Drive Folder IDs
+PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")
+FOLDER_BIO = os.getenv("FOLDER_BIO")
+FOLDER_NONBIO = os.getenv("FOLDER_NONBIO")
 
 # Authenticate Google Sheets
 try:
