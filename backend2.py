@@ -61,14 +61,31 @@ from flask import request, jsonify, send_file
 import base64
 from dotenv import load_dotenv
 
+# ✅ Enable Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# ✅ Load environment variables from .env file
+load_dotenv()
+
+# ✅ Read SMTP & Google API credentials from .env
+SMTP_SERVER = os.getenv("SMTP_SERVER")
+SMTP_PORT = int(os.getenv("SMTP_PORT", 587))  # Default to 587 if not set
+EMAIL_SENDER = os.getenv("EMAIL_SENDER")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")
+
+GOOGLE_SHEETS_CREDS = os.getenv("GOOGLE_SHEETS_CREDS")
+GOOGLE_DRIVE_CREDS = os.getenv("GOOGLE_DRIVE_CREDS")
+
+PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")
+FOLDER_BIO = os.getenv("FOLDER_BIO")
+FOLDER_NONBIO = os.getenv("FOLDER_NONBIO")
+
 # Initialize Flask app
 frontend_build_path = os.path.abspath("./frontendbuild-2")
 
 app = Flask(__name__, static_folder=frontend_build_path, template_folder=frontend_build_path)
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
-
-load_dotenv()
 
 
 UPLOAD_FOLDER = "uploads"
@@ -83,32 +100,74 @@ app.config["PROCESSED_FOLDER"] = PROCESSED_FOLDER
 
 DB_PATH = "waste_management.db"
 
-# SMTP Email Settings
-SMTP_SERVER = os.getenv("SMTP_SERVER", "smtp.gmail.com")
-SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-EMAIL_SENDER = os.getenv("EMAIL_SENDER")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD")  # Use App Password for security
 
-# Google API Credentials
-SCOPE = os.getenv("SCOPE").split(",")
-CREDS_FILE = os.getenv("CREDS_FILE")
-GAUTH_CREDENTIALS_FILE = os.getenv("GAUTH_CREDENTIALS_FILE")
+# ✅ Google Sheets Authentication
+def authenticate_google_sheets(creds_file):
+    try:
+        if not creds_file:
+            raise ValueError("❌ Google Sheets credentials file path is missing in .env")
 
-# Google Drive Folder IDs
-PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")
-FOLDER_BIO = os.getenv("FOLDER_BIO")
-FOLDER_NONBIO = os.getenv("FOLDER_NONBIO")
+        if not os.path.exists(creds_file):
+            raise FileNotFoundError(f"❌ Google Sheets credentials file not found: {creds_file}")
 
-# Authenticate Google Sheets
-try:
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDS_FILE, SCOPE)
-    client = gspread.authorize(creds)
-    SHEET_NAME = "wms"  # Replace with your actual Google Sheet name
-    sheet = client.open(SHEET_NAME).sheet1
-    print("✅ Connected to Google Sheets successfully!")
-except Exception as e:
-    print(f"❌ Error connecting to Google Sheets: {e}")
-    sheet = None
+        creds = ServiceAccountCredentials.from_json_keyfile_name(
+            creds_file,
+            ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"],
+        )
+        client = gspread.authorize(creds)
+
+        try:
+            sheet = client.open("wms").sheet1  # Replace "wms" with your actual Google Sheet name
+        except gspread.SpreadsheetNotFound:
+            raise Exception("❌ Google Sheet 'wms' not found. Check if the sheet name is correct.")
+
+        print("✅ Successfully authenticated with Google Sheets!")  # Explicitly print
+        logging.info("✅ Successfully authenticated with Google Sheets!")
+        return sheet
+    except Exception as e:
+        print(f"❌ Error connecting to Google Sheets: {e}")  # Explicitly print
+        logging.error(f"❌ Error connecting to Google Sheets: {e}")
+        return None
+
+
+# ✅ Google Drive Authentication
+def authenticate_google_drive(creds_file):
+    try:
+        if not creds_file:
+            raise ValueError("❌ Google Drive credentials file path is missing in .env")
+
+        if not os.path.exists(creds_file):
+            raise FileNotFoundError(f"❌ Google Drive credentials file not found: {creds_file}")
+
+        gauth = GoogleAuth()
+        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
+            creds_file, ["https://www.googleapis.com/auth/drive"]
+        )
+
+        drive = GoogleDrive(gauth)
+        print("✅ Successfully authenticated with Google Drive!")  # Explicitly print
+        logging.info("✅ Successfully authenticated with Google Drive!")
+        return drive
+    except Exception as e:
+        print(f"❌ Google Drive Authentication Failed: {e}")  # Explicitly print
+        logging.error(f"❌ Google Drive Authentication Failed: {e}")
+        return None
+
+
+# ✅ Initialize Google Sheets & Drive Authentication
+sheet = authenticate_google_sheets(GOOGLE_SHEETS_CREDS)
+drive = authenticate_google_drive(GOOGLE_DRIVE_CREDS)
+
+# ✅ Force print authentication status
+if sheet:
+    print("✅ Google Sheets is READY!")
+else:
+    print("❌ Google Sheets authentication FAILED!")
+
+if drive:
+    print("✅ Google Drive is READY!")
+else:
+    print("❌ Google Drive authentication FAILED!")
 
 # Advanced chatbot responses (Enhanced with Backend, Frontend, and Usage Knowledge)
 CHATBOT_RESPONSES = {
@@ -759,29 +818,6 @@ def get_google_sheets_logs():
     except Exception as e:
         return jsonify({"error": f"Error fetching logs from Google Sheets: {e}"}), 500
 
-def authenticate_google_drive():
-    """
-    Authenticates Google Drive using a service account.
-    Returns a GoogleDrive object for file operations.
-    """
-    try:
-        gauth = GoogleAuth()
-
-        # Use Service Account JSON credentials for Google Drive
-        gauth.credentials = ServiceAccountCredentials.from_json_keyfile_name(
-            GAUTH_CREDENTIALS_FILE,
-            ["https://www.googleapis.com/auth/drive"]
-        )
-
-        drive = GoogleDrive(gauth)
-        print("✅ Successfully authenticated with Google Drive!")
-        return drive
-    except Exception as e:
-        print(f"❌ Google Drive Authentication Failed: {e}")
-        return None
-
-# Initialize Google Drive authentication
-drive = authenticate_google_drive()
 
 def upload_to_drive(filepath, waste_type, is_video_frame=False):
     """
@@ -1753,8 +1789,9 @@ def generate_chart(chart_type, total_waste=None):
     return fig  # Return the Matplotlib figure
 
 
-def send_email_smtp(recipient_email, subject, html_content, images):
-    """ Send an email with inline images using CID """
+# ✅ Function to Send Emails
+def send_email_smtp(recipient_email, subject, html_content, images={}):
+    """Send an email with inline images using CID."""
     try:
         msg = EmailMessage()
         msg["Subject"] = subject
@@ -1765,10 +1802,15 @@ def send_email_smtp(recipient_email, subject, html_content, images):
 
         # Attach images using CID
         for img_path, cid in images.items():
-            with open(img_path, "rb") as img_file:
-                img_data = img_file.read()
-                maintype, subtype = mimetypes.guess_type(img_path)[0].split("/")
-                msg.add_attachment(img_data, maintype=maintype, subtype=subtype, cid=cid)
+            try:
+                with open(img_path, "rb") as img_file:
+                    img_data = img_file.read()
+                    mime_type, _ = mimetypes.guess_type(img_path)
+                    if mime_type:
+                        maintype, subtype = mime_type.split("/")
+                        msg.add_attachment(img_data, maintype=maintype, subtype=subtype, filename=os.path.basename(img_path), cid=cid)
+            except Exception as img_error:
+                logging.warning(f"⚠️ Warning: Failed to attach image {img_path} - {img_error}")
 
         # Send Email
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
@@ -1778,7 +1820,9 @@ def send_email_smtp(recipient_email, subject, html_content, images):
 
         return True
     except Exception as e:
+        logging.error(f"❌ Email Sending Failed: {e}")
         return str(e)
+
 
 
 @app.route("/api/send_report", methods=["POST"])
@@ -2080,6 +2124,7 @@ def get_chatbot_response(user_query):
     # **🔹 Default Response**
     return ["🤖 I'm not sure how to answer that. Please try rephrasing your question or ask something else about waste management."]
 
+
 @app.route("/api/chatbot", methods=["POST"])
 def chatbot():
     data = request.get_json()
@@ -2101,5 +2146,12 @@ def serve_react(path):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.template_folder, "index.html")
 
+
+@app.route("/")
+def home():
+    return "Flask App Running"
+
 if __name__ == '__main__':
-    app.run(debug=True)
+    print("\n🚀 Flask is starting...")  # Explicit startup message
+    app.run(host='0.0.0.0', port=5000, debug=True)
+
