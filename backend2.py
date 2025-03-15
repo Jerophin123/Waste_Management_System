@@ -5,13 +5,14 @@ from PIL import Image, ImageOps
 import numpy as np
 import os
 import cv2
-import sqlite3
+import pymysql
 from datetime import datetime
 from flask_cors import CORS
 import logging
 from datetime import datetime, timedelta
 from flask import send_from_directory
 from flask import Response
+from flask import Flask, render_template
 from flask import send_file
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -80,10 +81,14 @@ PARENT_FOLDER_ID = os.getenv("PARENT_FOLDER_ID")
 FOLDER_BIO = os.getenv("FOLDER_BIO")
 FOLDER_NONBIO = os.getenv("FOLDER_NONBIO")
 
-# Initialize Flask app
-frontend_build_path = os.path.abspath("./frontendbuild-2")
+# MySQL Database Configuration
+MYSQL_HOST = os.getenv("MYSQL_HOST")
+MYSQL_USER = os.getenv("MYSQL_USER")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
+MYSQL_DB = os.getenv("MYSQL_DB")
 
-app = Flask(__name__, static_folder=frontend_build_path, template_folder=frontend_build_path)
+# Initialize Flask app
+app = Flask(__name__)
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
 
@@ -582,20 +587,31 @@ PATTERN_RESPONSES = {
 # Logging Configuration
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# Initialize SQLite Database
+# Database Connection Function
+def get_db_connection():
+    return pymysql.connect(
+        host=MYSQL_HOST,
+        user=MYSQL_USER,
+        password=MYSQL_PASSWORD,
+        database=MYSQL_DB,
+        cursorclass=pymysql.cursors.DictCursor
+    )
+
+# Initialize Database
 def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        cursor = conn.cursor()
+    conn = get_db_connection()
+    with conn.cursor() as cursor:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                filename TEXT,
-                waste_type TEXT,
-                confidence REAL,
-                timestamp TEXT
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                filename VARCHAR(255),
+                waste_type VARCHAR(50),
+                confidence FLOAT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        conn.commit()
+    conn.commit()
+    conn.close()
 
 init_db()
 
@@ -792,15 +808,19 @@ def log_to_google_sheets(filename, waste_type, confidence):
 
 # Function to save prediction results in SQLite
 def save_record(filename, waste_type, confidence):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute('''
-        INSERT INTO records (filename, waste_type, confidence, timestamp)
-        VALUES (?, ?, ?, ?)
-    ''', (filename, waste_type, confidence, timestamp))
-    conn.commit()
-    conn.close()
+    conn = get_db_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute('''
+                INSERT INTO records (filename, waste_type, confidence, timestamp)
+                VALUES (%s, %s, %s, NOW())
+            ''', (filename, waste_type, confidence))
+        conn.commit()
+    except Exception as e:
+        print(f"❌ Error saving record: {e}")
+    finally:
+        conn.close()
+
 
     log_to_google_sheets(filename, waste_type, confidence)
 
@@ -854,6 +874,8 @@ def predict():
     """
     try:
         image_path = None
+        recipient_email = request.form.get("email")
+        logging.info(f"📧 Email received: {recipient_email}")
 
         # Check if a file is uploaded
         if "file" in request.files:
@@ -873,11 +895,9 @@ def predict():
             if not ("drive.google.com" in image_url or "photos.google.com" in image_url):
                 return jsonify({"error": "Invalid Google Drive/Photos link."}), 400
 
-            # Generate filename in the format image_from_link_YYYYMMDDHHMMSS.jpg
             filename = f"image_from_link_{datetime.now().strftime('%Y%m%d%H%M%S')}.jpg"
-
-            # Download the image
             image_path = download_image(image_url, filename)
+
             if not image_path:
                 return jsonify({"error": "Failed to download image."}), 500
 
@@ -915,6 +935,11 @@ def predict():
 
         # ✅ Start background thread for Google Drive upload
         threading.Thread(target=upload_image_to_drive, args=(image_path, waste_class)).start()
+
+        # ✅ Send Email in **Background Thread**
+        if recipient_email:
+            logging.info(f"📧 Sending result email in background to {recipient_email}")
+            send_result_email_smtp_background(recipient_email, filename, waste_class, confidence_score)
 
         return jsonify(response_data)
 
@@ -986,6 +1011,9 @@ def predict_video():
     video_path = None  # Initialize video path variable
 
     try:
+        recipient_email = request.form.get("email")  # ✅ Get recipient email
+        logging.info(f"📧 Email received: {recipient_email}")
+
         # **1️⃣ Check if a file is uploaded**
         if "file" in request.files:
             file = request.files["file"]
@@ -1082,6 +1110,13 @@ def predict_video():
         bio_percentage = (bio_count / total_frames) * 100 if total_frames > 0 else 0
         non_bio_percentage = (non_bio_count / total_frames) * 100 if total_frames > 0 else 0
 
+        # ✅ Send Email **Before Uploading to Google Drive**
+        if recipient_email:
+            logging.info(f"📧 Sending video classification email in background to {recipient_email}")
+            send_video_result_email_smtp_background(
+                recipient_email, filename, total_frames, bio_count, non_bio_count
+            )
+
         # ✅ Remove local video file after processing
         if os.path.exists(video_path):
             os.remove(video_path)
@@ -1099,7 +1134,6 @@ def predict_video():
     except Exception as e:
         logging.error(f"❌ Error processing video: {str(e)}", exc_info=True)
         return jsonify({"error": f"Internal Server Error: {str(e)}"}), 500
-
 
 
 def upload_frames_to_drive(frame_queue):
@@ -1154,28 +1188,30 @@ def get_waste_data():
     params = []
 
     if date:
-        query += " AND DATE(timestamp) = ?"
+        query += " AND DATE(timestamp) = %s"
         params.append(date)
     if start_time and end_time:
-        query += " AND TIME(timestamp) BETWEEN ? AND ?"
+        query += " AND TIME(timestamp) BETWEEN %s AND %s"
         params.extend([start_time, end_time])
     if waste_type:
-        query += " AND waste_type = ?"
+        query += " AND waste_type = %s"
         params.append(waste_type)
 
     query += " GROUP BY waste_type"
 
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute(query, params)
             results = cursor.fetchall()
 
-        waste_stats = {row[0]: row[1] for row in results}
+        conn.close()
+        waste_stats = {row["waste_type"]: row["COUNT(*)"] for row in results}
         return jsonify(waste_stats)
     except Exception as e:
         logging.error(f"Error fetching waste data: {e}")
         return jsonify({"error": "An error occurred while retrieving waste data."}), 500
+
 
 # Helper Functions for API Calls
 def fetch_waste_data(params):
@@ -1262,15 +1298,15 @@ def get_waste_by_weekday():
     Example Query:
     - "How much waste was collected on Monday?"
     """
-    weekday = request.args.get("weekday")  # Expects values like "Monday", "Tuesday" etc.
+    weekday = request.args.get("weekday")  # Expects values like "Monday", "Tuesday", etc.
 
     if not weekday:
         return jsonify({"error": "Please specify a weekday (e.g., Monday, Tuesday)."}), 400
 
-    # Convert weekday to a number (Monday = 0, Sunday = 6)
+    # Convert weekday to a number (Monday = 1, Sunday = 7 for MySQL)
     weekday_map = {
-        "Monday": 0, "Tuesday": 1, "Wednesday": 2, "Thursday": 3,
-        "Friday": 4, "Saturday": 5, "Sunday": 6
+        "Monday": 1, "Tuesday": 2, "Wednesday": 3, "Thursday": 4,
+        "Friday": 5, "Saturday": 6, "Sunday": 7
     }
 
     if weekday not in weekday_map:
@@ -1279,28 +1315,31 @@ def get_waste_by_weekday():
     weekday_number = weekday_map[weekday]
 
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute('''
-                SELECT waste_type, COUNT(*) 
+                SELECT waste_type, COUNT(*) AS count 
                 FROM records 
-                WHERE strftime('%w', timestamp) = ? 
+                WHERE DAYOFWEEK(timestamp) = %s 
                 GROUP BY waste_type
-            ''', (str(weekday_number),))
+            ''', (weekday_number,))
             results = cursor.fetchall()
+
+        conn.close()
 
         if not results:
             return jsonify({"message": f"No waste data found for {weekday}."})
 
-        waste_stats = {row[0]: row[1] for row in results}
+        waste_stats = {row["waste_type"]: row["count"] for row in results}
         return jsonify({
             "date": weekday,
             "waste_data": waste_stats
         })
-    
+
     except Exception as e:
         logging.error(f"Error fetching waste data for {weekday}: {e}")
         return jsonify({"error": "An error occurred while retrieving waste data."}), 500
+
 
 def fetch_waste_by_weekday(weekday):
     """Fetches waste data by weekday."""
@@ -1351,101 +1390,143 @@ def generate_report_link():
 @app.route("/api/records", methods=["GET"])
 def get_records():
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute('SELECT id, filename, waste_type, confidence, timestamp FROM records ORDER BY timestamp DESC')
             records = cursor.fetchall()
+
+        conn.close()
+
         return jsonify([
-            {"id": row[0], "filename": row[1], "waste_type": row[2], "confidence": row[3], "timestamp": row[4]}
+            {"id": row["id"], "filename": row["filename"], "waste_type": row["waste_type"],
+             "confidence": row["confidence"], "timestamp": row["timestamp"]}
             for row in records
         ])
     except Exception as e:
         logging.error(f"Error retrieving records: {e}")
         return jsonify({"error": "An error occurred while fetching records."}), 500
 
+
 # API route to get waste statistics
 @app.route("/api/stats", methods=["GET"])
 def get_stats():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute('''
-        SELECT waste_type, COUNT(*) as count
-        FROM records
-        GROUP BY waste_type
-    ''')
-    stats = cursor.fetchall()
-    conn.close()
+    """
+    Fetches the total count of waste types grouped by category.
+    """
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute('''
+                SELECT waste_type, COUNT(*) AS count
+                FROM records
+                GROUP BY waste_type
+            ''')
+            stats = cursor.fetchall()
+        
+        conn.close()
 
-    # Convert the data into a dictionary
-    result = {row[0]: row[1] for row in stats}
-    return jsonify(result)
+        # Convert the data into a dictionary
+        result = {row["waste_type"]: row["count"] for row in stats}
+        return jsonify(result)
 
-# API route to get waste trends (e.g., monthly counts)
+    except Exception as e:
+        logging.error(f"Error retrieving waste statistics: {e}")
+        return jsonify({"error": "An error occurred while fetching statistics."}), 500
+
 @app.route("/api/trends", methods=["GET"])
 def get_trends():
+    """
+    Fetches monthly waste classification trends.
+    """
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute('''
-                SELECT strftime('%Y-%m', timestamp) as month, COUNT(*) as count
+                SELECT DATE_FORMAT(timestamp, '%Y-%m') AS month, COUNT(*) AS count
                 FROM records
                 GROUP BY month
                 ORDER BY month
             ''')
             trends = cursor.fetchall()
+        
+        conn.close()
+
         return jsonify([
-            {"month": row[0], "count": row[1]}
+            {"month": row["month"], "count": row["count"]}
             for row in trends
         ])
+
     except Exception as e:
         logging.error(f"Error retrieving trends: {e}")
         return jsonify({"error": "An error occurred while fetching trends."}), 500
 
+
 # API route to get waste distribution (dummy scatter data)
 @app.route("/api/distribution", methods=["GET"])
 def get_distribution():
+    """
+    Fetches waste classification confidence scores for visualization.
+    """
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute('''
-                SELECT confidence, id
+                SELECT id, confidence
                 FROM records
             ''')
             distribution = cursor.fetchall()
+        
+        conn.close()
+
         return jsonify([
-            {"x": row[1], "y": row[0]} for row in distribution
+            {"x": row["id"], "y": row["confidence"]} for row in distribution
         ])
+
     except Exception as e:
         logging.error(f"Error retrieving distribution: {e}")
         return jsonify({"error": "An error occurred while fetching distribution."}), 500
 
+
 @app.route("/api/filter_records", methods=["GET"])
 def filter_records():
+    """
+    Fetch waste records filtered by date, month, or year.
+    """
     date = request.args.get('date')  # Format: 'YYYY-MM-DD'
     month = request.args.get('month')  # Format: 'YYYY-MM'
     year = request.args.get('year')  # Format: 'YYYY'
-    
+
     query = "SELECT id, filename, waste_type, confidence, timestamp FROM records WHERE 1=1"
     params = []
-    
+
     if date:
-        query += " AND DATE(timestamp) = ?"
+        query += " AND DATE(timestamp) = %s"
         params.append(date)
     if month:
-        query += " AND strftime('%Y-%m', timestamp) = ?"
+        query += " AND DATE_FORMAT(timestamp, '%Y-%m') = %s"
         params.append(month)
     if year:
-        query += " AND strftime('%Y', timestamp) = ?"
+        query += " AND YEAR(timestamp) = %s"
         params.append(year)
-    
+
     try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
             cursor.execute(query, params)
             records = cursor.fetchall()
-        return jsonify([{
-            "id": row[0], "filename": row[1], "waste_type": row[2], "confidence": row[3], "timestamp": row[4]
-        } for row in records])
+        
+        conn.close()
+
+        return jsonify([
+            {
+                "id": row["id"],
+                "filename": row["filename"],
+                "waste_type": row["waste_type"],
+                "confidence": row["confidence"],
+                "timestamp": row["timestamp"]
+            } for row in records
+        ])
+
     except Exception as e:
         logging.error(f"Error filtering records: {e}")
         return jsonify({"error": "An error occurred while filtering records."}), 500
@@ -1458,7 +1539,7 @@ def download_report_with_proper_spacing():
     elements = []
     styles = getSampleStyleSheet()
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Create a centered style for the title
@@ -1477,8 +1558,8 @@ def download_report_with_proper_spacing():
     cursor.execute('SELECT waste_type, COUNT(*) as count FROM records GROUP BY waste_type')
     stats = cursor.fetchall()
 
-    bio_count = next((row[1] for row in stats if row[0] == "Bio-Degradable"), 0)
-    non_bio_count = next((row[1] for row in stats if row[0] == "Non-Bio-Degradable"), 0)
+    bio_count = next((row["count"] for row in stats if row["waste_type"] == "Bio-Degradable"), 0)
+    non_bio_count = next((row["count"] for row in stats if row["waste_type"] == "Non-Bio-Degradable"), 0)
     total_count = bio_count + non_bio_count
     bio_percentage = (bio_count / total_count) * 100 if total_count > 0 else 0
     non_bio_percentage = (non_bio_count / total_count) * 100 if total_count > 0 else 0
@@ -1519,38 +1600,27 @@ def download_report_with_proper_spacing():
     elements.append(PageBreak())  # Add a page break before the charts
 
     # Pie Chart with Description
-    pie_desc = Paragraph(
-        "<b>Pie Chart:</b> This chart illustrates the distribution of bio-degradable and non-bio-degradable waste in terms of percentage.",
-        styles['Normal']
-    )
+    pie_desc = Paragraph("<b>Pie Chart:</b> This chart illustrates the distribution of bio-degradable and non-bio-degradable waste in terms of percentage.", styles['Normal'])
     elements.append(pie_desc)
     elements.append(Spacer(1, 10))
+
     drawing_pie = Drawing(400, 200)
     pie = Pie()
     pie.x = 150
     pie.y = 50
     pie.data = [bio_count, non_bio_count]
-    pie.labels = [
-        f"Bio-Degradable ({bio_percentage:.2f}%)",
-        f"Non-Bio-Degradable ({non_bio_percentage:.2f}%)"
-    ]
+    pie.labels = [f"Bio-Degradable ({bio_percentage:.2f}%)", f"Non-Bio-Degradable ({non_bio_percentage:.2f}%)"]
     pie.slices.strokeWidth = 0.5
-    pie.slices[0].fillColor = Color(0, 0.6, 0)  # Green for Bio-Degradable
-    pie.slices[1].fillColor = Color(0.8, 0, 0)  # Red for Non-Bio-Degradable
+    pie.slices[0].fillColor = Color(0, 0.6, 0)  # Green
+    pie.slices[1].fillColor = Color(0.8, 0, 0)  # Red
     drawing_pie.add(pie)
     elements.append(drawing_pie)
     elements.append(Spacer(1, 40))
 
     # Bar Chart with Description
-    bar_desc = Paragraph(
-        "<b>Bar Chart:</b> This chart shows the count of bio-degradable and non-bio-degradable wastes.",
-        styles['Normal']
-    )
+    bar_desc = Paragraph("<b>Bar Chart:</b> This chart shows the count of bio-degradable and non-bio-degradable wastes.", styles['Normal'])
     elements.append(bar_desc)
     elements.append(Spacer(1, 10))
-
-    # Ensure both counts are included in the data, even if one is zero
-    bar_data = [[bio_count, non_bio_count]]
 
     drawing_bar = Drawing(400, 200)
     bar_chart = VerticalBarChart()
@@ -1558,10 +1628,17 @@ def download_report_with_proper_spacing():
     bar_chart.y = 50
     bar_chart.height = 150
     bar_chart.width = 300
+
+    # ✅ Ensure both counts are included in the data, even if one is zero
+    bar_data = [[bio_count, non_bio_count if non_bio_count > 0 else 0.1]]  # Avoid zero-height bars
+
     bar_chart.data = bar_data
     bar_chart.categoryAxis.categoryNames = ["Bio-Degradable", "Non-Bio-Degradable"]
-    bar_chart.valueAxis.valueMin = 0
-    bar_chart.valueAxis.valueMax = max(bar_data[0]) + 2  # Adjust the maximum value
+    bar_chart.valueAxis.valueMin = 0  # Ensure the y-axis starts at 0
+    bar_chart.valueAxis.valueMax = max(bio_count, non_bio_count) + 50  # Set a dynamic max value
+    bar_chart.barSpacing = 10  # Add spacing between bars
+
+    # ✅ Prevent zero-height bar issues
     bar_chart.bars[0].fillColor = Color(0, 0.6, 0)  # Green for Bio-Degradable
     bar_chart.bars[1].fillColor = Color(1, 0, 0.2)  # Red for Non-Bio-Degradable
 
@@ -1570,101 +1647,67 @@ def download_report_with_proper_spacing():
     elements.append(PageBreak())
 
 
-    # Waste Trend (Line Chart) with Description
-    trend_desc = Paragraph(
-        "<b>Waste Trend:</b> This line chart shows the trend of waste classification over time, grouped by months.",
-        styles['Normal']
-    )
+    # Waste Trend Chart
+    trend_desc = Paragraph("<b>Waste Trend:</b> This line chart shows the trend of waste classification over time.", styles['Normal'])
     elements.append(trend_desc)
     elements.append(Spacer(1, 10))
-    cursor.execute('SELECT strftime("%Y-%m", timestamp) AS month, COUNT(*) FROM records GROUP BY month')
+
+    cursor.execute("SELECT DATE_FORMAT(timestamp, '%Y-%m') AS month, COUNT(*) FROM records GROUP BY month")
     trend_data = cursor.fetchall()
-    months = [row[0] for row in trend_data]
-    counts = [row[1] for row in trend_data]
+    months = [row["month"] for row in trend_data]
+    counts = [row["COUNT(*)"] for row in trend_data]
 
     drawing_line = Drawing(400, 200)
     line_chart = HorizontalLineChart()
     line_chart.x = 50
     line_chart.y = 50
-    line_chart.height = 150
-    line_chart.width = 300
     line_chart.data = [counts]
     line_chart.categoryAxis.categoryNames = months
-    line_chart.categoryAxis.labels.angle = 45
-    line_chart.categoryAxis.labels.boxAnchor = 'n'
-    line_chart.valueAxis.valueMin = 0
-    line_chart.valueAxis.valueMax = max(counts) + 2
-    line_chart.lines[0].strokeWidth = 2
     drawing_line.add(line_chart)
     elements.append(drawing_line)
     elements.append(Spacer(1, 40))
 
-    # Waste Distribution (Scatter Plot) with Description
-    distribution_desc = Paragraph(
-        "<b>Waste Distribution:</b> This scatter plot shows the confidence scores of the last 10 classified wastes.",
-        styles['Normal']
-    )
+    # Waste Distribution Chart
+    distribution_desc = Paragraph("<b>Waste Distribution:</b> This scatter plot shows confidence scores of classified waste.", styles['Normal'])
     elements.append(distribution_desc)
     elements.append(Spacer(1, 10))
 
-    # Fetch data from the database
-    cursor.execute('SELECT id, confidence FROM records')
+    cursor.execute("SELECT id, confidence FROM records ORDER BY timestamp DESC LIMIT 10")
     distribution_data = cursor.fetchall()
 
-    # Extract only the last 10 records
-    last_10_distributions = distribution_data[-10:]
-
-    # Create the scatter plot
     drawing_scatter = Drawing(400, 200)
-    scatter_chart = VerticalBarChart()  # Bar-like scatter for simplicity
+    scatter_chart = VerticalBarChart()
     scatter_chart.x = 50
     scatter_chart.y = 50
-    scatter_chart.height = 150
-    scatter_chart.width = 300
-    scatter_chart.data = [[row[1] for row in last_10_distributions]]
-    scatter_chart.categoryAxis.categoryNames = [str(row[0]) for row in last_10_distributions]
+    scatter_chart.data = [[row["confidence"] for row in distribution_data]]
+    scatter_chart.categoryAxis.categoryNames = [str(row["id"]) for row in distribution_data]
     scatter_chart.bars[0].fillColor = Color(0.6, 0, 0.8)
-
-    # Add the chart to the drawing and append it to the elements
     drawing_scatter.add(scatter_chart)
     elements.append(drawing_scatter)
-    elements.append(PageBreak()) 
+    elements.append(PageBreak())
 
-    # Analytics Section
-    analytics_title = Paragraph("<b>Waste Collected</b>", styles['Title'])
+    # Waste Collection Table
+    analytics_title = Paragraph("<b>Waste Collection Data</b>", styles['Title'])
     elements.append(analytics_title)
     elements.append(Spacer(1, 20))
 
-    # Fetch data from the database
-    cursor.execute('SELECT filename, waste_type, confidence, timestamp FROM records')
+    cursor.execute("SELECT filename, waste_type, confidence, timestamp FROM records")
     records = cursor.fetchall()
 
-    # Table Headers and Data
-    data = [['SI No', 'Filename', 'Type', 'Confidence', 'Timestamp']]  # Header row
+    data = [['SI No', 'Filename', 'Type', 'Confidence', 'Timestamp']]
+    for index, record in enumerate(records, start=1):
+        truncated_filename = record["filename"][:20] + "..." if len(record["filename"]) > 20 else record["filename"]
+        data.append([index, truncated_filename, record["waste_type"], f"{record['confidence']:.2f}", record["timestamp"]])
 
-    # Add serial numbers
-    for index, record in enumerate(records, start=1):  # Start serial numbers from 1
-        truncated_filename = record[0][:10] + "..." if len(record[0]) > 20 else record[0]
-        data.append([index, truncated_filename, record[1], f"{record[2]:.2f}", record[3]])
-
-    # Create Table with Adjusted Column Widths
-    table = Table(data, colWidths=[50, 200, 100, 80, 120])  # Added space for SI No column
-
-    # Apply Table Styling
+    table = Table(data, colWidths=[50, 200, 100, 80, 120])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
         ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
-
-    # Append Table to Report
     elements.append(table)
-    elements.append(PageBreak())  # Add a page break after the table
-
 
     # Finalize PDF
     doc.build(elements)
@@ -1672,11 +1715,12 @@ def download_report_with_proper_spacing():
     conn.close()
     return send_file(buffer, as_attachment=True, download_name="Report.pdf", mimetype='application/pdf')
 
+
 @app.route('/api/download_logs', methods=['GET'])
 def download_logs():
     try:
-        # Fetch log data from the database
-        conn = sqlite3.connect(DB_PATH)
+        # Fetch log data from the MySQL database
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute('SELECT filename, waste_type, confidence, timestamp FROM records')
         records = cursor.fetchall()
@@ -1693,7 +1737,7 @@ def download_logs():
             data.truncate(0)
             # Write rows
             for record in records:
-                writer.writerow(record)
+                writer.writerow([record["filename"], record["waste_type"], record["confidence"], record["timestamp"]])
                 yield data.getvalue()
                 data.seek(0)
                 data.truncate(0)
@@ -1710,9 +1754,10 @@ def download_logs():
         logging.error(f"Error generating logs CSV: {e}")
         return jsonify({"error": "An error occurred while generating the CSV file."}), 500
 
+
 def generate_chart(chart_type, total_waste=None):
     """ Generate different types of charts and return a Matplotlib figure """
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     fig, ax = plt.subplots()
@@ -1720,8 +1765,8 @@ def generate_chart(chart_type, total_waste=None):
     if chart_type == "pie":
         cursor.execute('SELECT waste_type, COUNT(*) as count FROM records GROUP BY waste_type')
         stats = cursor.fetchall()
-        labels = [row[0] for row in stats]
-        sizes = [row[1] for row in stats]
+        labels = [row["waste_type"] for row in stats]
+        sizes = [row["count"] for row in stats]
 
         ax.pie(sizes, labels=labels, autopct='%1.1f%%', colors=['#4CAF50', '#E74C3C'])
         ax.set_title("Waste Type Distribution")
@@ -1729,18 +1774,18 @@ def generate_chart(chart_type, total_waste=None):
     elif chart_type == "bar":
         cursor.execute('SELECT waste_type, COUNT(*) as count FROM records GROUP BY waste_type')
         stats = cursor.fetchall()
-        labels = [row[0] for row in stats]
-        counts = [row[1] for row in stats]
+        labels = [row["waste_type"] for row in stats]
+        counts = [row["count"] for row in stats]
 
         ax.bar(labels, counts, color=['#4CAF50', '#E74C3C'])
         ax.set_ylabel("Count")
         ax.set_title("Waste Count Comparison")
 
     elif chart_type == "trend":
-        cursor.execute('SELECT strftime("%Y-%m", timestamp) AS month, COUNT(*) FROM records GROUP BY month')
+        cursor.execute("SELECT DATE_FORMAT(timestamp, '%Y-%m') AS month, COUNT(*) FROM records GROUP BY month")
         stats = cursor.fetchall()
-        months = [row[0] for row in stats]
-        counts = [row[1] for row in stats]
+        months = [row["month"] for row in stats]
+        counts = [row["COUNT(*)"] for row in stats]
 
         ax.plot(months, counts, marker='o', linestyle='-', color='#3498DB')
         ax.set_ylabel("Count")
@@ -1749,10 +1794,10 @@ def generate_chart(chart_type, total_waste=None):
         ax.grid(True)
 
     elif chart_type == "distribution":
-        cursor.execute('SELECT id, confidence FROM records')
+        cursor.execute('SELECT id, confidence FROM records ORDER BY timestamp DESC LIMIT 10')
         stats = cursor.fetchall()
-        ids = [row[0] for row in stats[-10:]]  # Last 10 records
-        confidence = [row[1] for row in stats[-10:]]
+        ids = [row["id"] for row in stats]
+        confidence = [row["confidence"] for row in stats]
 
         ax.scatter(ids, confidence, color='#9B59B6', alpha=0.7)
         ax.set_ylabel("Confidence Score")
@@ -1789,9 +1834,8 @@ def generate_chart(chart_type, total_waste=None):
     return fig  # Return the Matplotlib figure
 
 
-# ✅ Function to Send Emails
 def send_email_smtp(recipient_email, subject, html_content, images={}):
-    """Send an email with inline images using CID."""
+    """Send an email with inline images using SMTP."""
     try:
         msg = EmailMessage()
         msg["Subject"] = subject
@@ -1812,17 +1856,375 @@ def send_email_smtp(recipient_email, subject, html_content, images={}):
             except Exception as img_error:
                 logging.warning(f"⚠️ Warning: Failed to attach image {img_path} - {img_error}")
 
+        # Debug: Log SMTP details
+        logging.info(f"📧 Connecting to SMTP server {SMTP_SERVER}:{SMTP_PORT} as {EMAIL_SENDER}")
+
         # Send Email
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
             server.starttls()
             server.login(EMAIL_SENDER, EMAIL_PASSWORD)
             server.send_message(msg)
 
+        logging.info(f"✅ Email successfully sent to {recipient_email}")
         return True
+
+    except smtplib.SMTPAuthenticationError:
+        logging.error("❌ Authentication Error: Check your email and password in .env file.")
+        return "Authentication Error: Invalid email/password."
+
+    except smtplib.SMTPException as smtp_error:
+        logging.error(f"❌ SMTP Exception: {smtp_error}")
+        return f"SMTP Error: {smtp_error}"
+
     except Exception as e:
-        logging.error(f"❌ Email Sending Failed: {e}")
+        logging.error(f"❌ General Email Sending Error: {e}")
         return str(e)
 
+
+def send_result_email_smtp_background(recipient_email, filename, waste_class, confidence_score):
+    """
+    Sends waste classification results via email in a background thread.
+    """
+    def send_email():
+        try:
+            subject = "Waste Classification Result - Waste Management System"
+
+            # ✅ Define colors inside HTML directly
+            if waste_class == "Bio-Degradable":
+                class_color = "background-color:#27AE60; color:#FFFFFF; font-weight:bold;"  # Green BG, White Text
+            else:
+                class_color = "background-color:#E74C3C; color:#FFFFFF; font-weight:bold;"  # Red BG, White Text
+
+            bg_color = "#ECF0F1"  # Light grey background
+            timestamp = datetime.now().strftime("%Y-%m-%d %I:%M %p")  # Date-Time Format
+
+            html_content = f"""
+            <html>
+                <head>
+                    <style>
+                       /* Responsive Email Styles */
+                        @media only screen and (max-width: 600px) {{
+                            .email-container {{
+                                width: 100% !important;
+                                padding: 10px !important;
+                            }}
+
+                            .email-header {{
+                                font-size: 18px !important;
+                                padding: 12px !important;
+                                text-align: center !important;
+                            }}
+
+                            .table-container {{
+                                width: 100% !important;
+                                display: block !important;
+                            }}
+
+                            .table-container tr {{
+                                display: flex !important;
+                                flex-direction: column !important;
+                                align-items: stretch !important;
+                                border-bottom: 1px solid #ddd !important;
+                                padding: 5px 0 !important;
+                            }}
+
+                            .table-container th {{
+                                background-color: #2C3E50 !important;
+                                color: white !important;
+                                text-align: left !important;
+                                padding: 10px !important;
+                                border-radius: 5px 5px 0 0 !important;
+                            }}
+
+                            .table-container td {{
+                                background-color: #F4F6F7 !important;
+                                padding: 10px !important;
+                                border-radius: 0 0 5px 5px !important;
+                                text-align: left !important;
+                            }}
+
+                            .info-box {{
+                                padding: 12px !important;
+                                font-size: 13px !important;
+                                text-align: justify !important;
+                            }}
+
+                            /* Ensure classification row is centered */
+                            .classification-row {{
+                                text-align: center !important;
+                                font-size: 16px !important;
+                                font-weight: bold !important;
+                            }}
+                        }}
+                    </style>
+                </head>
+                <body style="font-family: Arial, sans-serif; background-color: {bg_color}; padding: 20px; margin: 0;">
+                    <div class="email-container" style="max-width: 600px; background: white; padding: 25px; border-radius: 10px;
+                                box-shadow: 0 4px 8px rgba(0,0,0,0.1); margin: auto;">
+
+                        <!-- Header -->
+                        <div class="email-header" style="background: linear-gradient(90deg, #2C3E50, #34495E); padding: 15px;
+                                    border-radius: 8px 8px 0 0; text-align: center;">
+                            <h2 style="color: #ECF0F1; margin: 0;">Waste Classification Result</h2>
+                        </div>
+
+                        <!-- Classification Details -->
+                        <div style="padding: 20px; text-align: left;">
+                            <p style="color: #7F8C8D; font-size: 14px;">
+                                Below are the details of your recent waste classification.
+                            </p>
+
+                            <table class="table-container" style="width: 100%; border-collapse: collapse; margin-top: 15px;">
+                                <tr>
+                                    <th style="text-align: left; padding: 10px; background-color: #34495E; color: white;">File</th>
+                                    <td style="padding: 10px; background-color: #F4F6F7;">{filename}</td>
+                                </tr>
+                                <tr>
+                                    <th style="text-align: left; padding: 10px; background-color: #34495E; color: white;">Classification</th>
+                                    <td style="padding: 10px; {class_color} text-align: center;">
+                                        {waste_class}
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th style="text-align: left; padding: 10px; background-color: #34495E; color: white;">Confidence Score</th>
+                                    <td style="padding: 10px; background-color: #F4F6F7;">{confidence_score:.2f}</td>
+                                </tr>
+                                <tr>
+                                    <th style="text-align: left; padding: 10px; background-color: #34495E; color: white;">Date & Time</th>
+                                    <td style="padding: 10px; background-color: #F4F6F7;">{timestamp} (IST)</td>
+                                </tr>
+                            </table>
+
+                            <!-- Informational Section -->
+                            <div class="info-box" style="margin-top: 20px; padding: 15px; background-color: #D5DBDB; border-radius: 6px; text-align: center;">
+                                <h4 style="margin: 0; color: #2C3E50;">What This Means?</h4>
+                                <p style="font-size: 14px; color: #7F8C8D;">
+                                    This result is based on our AI-powered waste classification system. Proper waste segregation
+                                    ensures better recycling and environmental sustainability.
+                                </p>
+                            </div>
+
+                            <!-- Footer -->
+                            <div style="margin-top: 20px; text-align: center; font-size: 12px; color: #BDC3C7;">
+                                <p>This email was automatically generated by the <b>Waste Management System</b>.</p>
+                                <p>Please do not reply to this email.</p>
+                            </div>
+                        </div>
+                    </div>
+                </body>
+            </html>
+            """
+
+            # ✅ Call email function
+            email_status = send_email_smtp(recipient_email, subject, html_content)
+
+            if email_status is True:
+                logging.info(f"✅ Email sent successfully to {recipient_email}")
+            else:
+                logging.error(f"❌ Failed to send result email: {email_status}")
+
+        except Exception as e:
+            logging.error(f"❌ Error in send_result_email_smtp_background: {e}")
+
+    # ✅ Start email sending in a **background thread**
+    email_thread = threading.Thread(target=send_email)
+    email_thread.start()
+
+
+def send_video_result_email_smtp_background(recipient_email, video_filename, total_frames, bio_count, non_bio_count):
+    """
+    Sends video waste classification results via email in a background thread.
+    """
+    def send_email():
+        try:
+            subject = "Video Waste Classification Report - Waste Management System"
+
+            # ✅ Compute Percentages
+            bio_percentage = (bio_count / total_frames) * 100 if total_frames > 0 else 0
+            non_bio_percentage = (non_bio_count / total_frames) * 100 if total_frames > 0 else 0
+
+            # ✅ Get current Date & Time
+            timestamp = datetime.now().strftime("%Y-%m-%d %I:%M %p")  # Format: YYYY-MM-DD HH:MM AM/PM
+
+            # ✅ Define Colors
+            bio_color = "#27AE60"  # Green
+            non_bio_color = "#E74C3C"  # Red
+            bg_color = "#ECF0F1"  # Light grey background for contrast
+
+            html_content = f"""
+            <html>
+                <head>
+                    <style>
+                        /* General Styles */
+                        body {{
+                            font-family: 'Arial', sans-serif;
+                            background-color: {bg_color};
+                            padding: 20px;
+                            margin: 0;
+                        }}
+
+                        .email-container {{
+                            max-width: 650px;
+                            background: white;
+                            padding: 25px;
+                            border-radius: 10px;
+                            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                            margin: auto;
+                        }}
+
+                        .email-header {{
+                            background: linear-gradient(90deg, #2C3E50, #34495E);
+                            padding: 15px;
+                            border-radius: 8px 8px 0 0;
+                            text-align: center;
+                        }}
+
+                        .email-header h2 {{
+                            color: #ECF0F1;
+                            margin: 0;
+                        }}
+
+                        .content {{
+                            padding: 20px;
+                        }}
+
+                        .table-container {{
+                            width: 100%;
+                            border-collapse: collapse;
+                            margin-top: 15px;
+                        }}
+
+                        .table-container th {{
+                            background-color: #BDC3C7;
+                            color: white;
+                            text-align: left;
+                            padding: 10px;
+                            border-radius: 5px 5px 0 0;
+                        }}
+
+                        .table-container td {{
+                            background-color: #F4F6F7;
+                            padding: 10px;
+                            border-radius: 0 0 5px 5px;
+                        }}
+
+                        /* Responsive Styles for Mobile Screens */
+                        @media only screen and (max-width: 600px) {{
+                            .email-container {{
+                                width: 100% !important;
+                                padding: 15px !important;
+                            }}
+
+                            .email-header h2 {{
+                                font-size: 18px !important;
+                                padding: 12px !important;
+                                text-align: center !important;
+                            }}
+
+                            .table-container {{
+                                display: block !important;
+                            }}
+
+                            .table-container tr {{
+                                display: flex !important;
+                                flex-direction: column !important;
+                                align-items: stretch !important;
+                                border-bottom: 1px solid #ddd !important;
+                                padding: 5px 0 !important;
+                            }}
+
+                            .table-container th {{
+                                background-color: #2C3E50 !important;
+                                color: white !important;
+                                text-align: left !important;
+                                padding: 10px !important;
+                                border-radius: 5px 5px 0 0 !important;
+                            }}
+
+                            .table-container td {{
+                                background-color: #F4F6F7 !important;
+                                padding: 10px !important;
+                                border-radius: 0 0 5px 5px !important;
+                                text-align: left !important;
+                            }}
+                        }}
+                    </style>
+                </head>
+                <body>
+                    <div class="email-container">
+
+                        <!-- Header -->
+                        <div class="email-header">
+                            <h2>Video Waste Classification Report</h2>
+                        </div>
+
+                        <!-- Classification Details -->
+                        <div class="content">
+                            <p style="color: #7F8C8D; font-size: 14px;">
+                                Below are the results from your recent video waste classification.
+                            </p>
+
+                            <table class="table-container">
+                                <tr>
+                                    <th>Video File</th>
+                                    <td>{video_filename}</td>
+                                </tr>
+                                <tr>
+                                    <th>Total Frames Processed</th>
+                                    <td>{total_frames}</td>
+                                </tr>
+                                <tr>
+                                    <th>Bio-Degradable</th>
+                                    <td style="background-color: {bio_color}; color: white; font-weight: bold;">
+                                        {bio_count} frames ({bio_percentage:.2f}%)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th>Non-Bio-Degradable</th>
+                                    <td style="background-color: {non_bio_color}; color: white; font-weight: bold;">
+                                        {non_bio_count} frames ({non_bio_percentage:.2f}%)
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th>Date & Time</th>
+                                    <td>{timestamp} (IST)</td>
+                                </tr>
+                            </table>
+
+                            <!-- Informational Section -->
+                            <div style="margin-top: 20px; padding: 15px; background-color: #D5DBDB; border-radius: 6px; text-align: center;">
+                                <h4>What This Means?</h4>
+                                <p style="font-size: 14px; color: #7F8C8D;">
+                                    This result is based on our AI-powered waste classification system. Proper waste segregation
+                                    ensures better recycling and environmental sustainability.
+                                </p>
+                            </div>
+
+                            <!-- Footer -->
+                            <div style="margin-top: 20px; text-align: center; font-size: 12px; color: #BDC3C7;">
+                                <p>This email was automatically generated by the <b>Waste Management System</b>.</p>
+                                <p>Please do not reply to this email.</p>
+                            </div>
+                        </div>
+                    </div>
+                </body>
+            </html>
+            """
+
+            # ✅ Call email function
+            email_status = send_email_smtp(recipient_email, subject, html_content)
+
+            if email_status is True:
+                logging.info(f"✅ Video classification email sent successfully to {recipient_email}")
+            else:
+                logging.error(f"❌ Failed to send video result email: {email_status}")
+
+        except Exception as e:
+            logging.error(f"❌ Error in send_video_result_email_smtp_background: {e}")
+
+    # ✅ Start email sending in a **background thread**
+    email_thread = threading.Thread(target=send_email)
+    email_thread.start()
 
 
 @app.route("/api/send_report", methods=["POST"])
@@ -1854,22 +2256,26 @@ def send_report():
         # Remove duplicates
         emails = list(set(emails))
 
-        # Fetch waste statistics
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM records")
-        total_waste = cursor.fetchone()[0]
 
-        cursor.execute("SELECT waste_type, COUNT(*) FROM records GROUP BY waste_type")
-        stats = dict(cursor.fetchall())
+        # Fetch total waste count
+        cursor.execute("SELECT COUNT(*) AS total FROM records")
+        total_waste = cursor.fetchone()["total"]
+
+        # Fetch waste type counts
+        cursor.execute("SELECT waste_type, COUNT(*) as count FROM records GROUP BY waste_type")
+        stats = {row["waste_type"]: row["count"] for row in cursor.fetchall()}
 
         bio_count = stats.get("Bio-Degradable", 0)
         non_bio_count = stats.get("Non-Bio-Degradable", 0)
+
         conn.close()
 
         # Ensure we don't divide by zero
         bio_percentage = (bio_count / total_waste) * 100 if total_waste > 0 else 0
         non_bio_percentage = (non_bio_count / total_waste) * 100 if total_waste > 0 else 0
+
 
         # Generate charts
         charts = {
@@ -2139,19 +2545,11 @@ def chatbot():
 
     return jsonify({"response": response})
 
-@app.route("/", defaults={"path": ""})
-@app.route("/<path:path>")
-def serve_react(path):
-    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
-        return send_from_directory(app.static_folder, path)
-    return send_from_directory(app.template_folder, "index.html")
-
-
 @app.route("/")
 def home():
-    return "Flask App Running"
+    return render_template("index.html")
 
 if __name__ == '__main__':
-    print("\n🚀 Flask is starting...")  # Explicit startup message
-    app.run(host='0.0.0.0', port=5000, debug=True)
-
+    print("\n🚀 Flask is starting...") 
+    print("\n Now, You are good to go ✅") # Explicit startup message
+    app.run()
