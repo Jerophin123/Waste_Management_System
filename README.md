@@ -169,16 +169,21 @@ Then deploy the **`frontend/build`** folder.
 2. **Upload an image** or **Enter a Google Drive link**.
 3. Click **Predict**.
 4. AI classifies the waste & shows confidence scores.
+5. **If an email is provided, the classification result will be sent to your email.**
 
 ### 📷 **Real-time Webcam Classification**
 1. Switch to **Camera Mode**.
 2. Select the desired **camera device**.
-3. Click **Start Real-Time** to begin predictions.
+3. Click **Start Real-Time** to begin predictions in real-time.
+4. Click **capture button** to capture waste image.
+5. AI classifies the waste & shows confidence scores. 
+6. **If an email is provided, the classification result will be sent to your email.**
 
 ### 🎥 **Video Analysis**
 1. Upload a **video file** or provide a **Google Drive link**.
 2. Click **Predict** and wait for frame extraction.
 3. View the **classified frames** in the results dialog.
+4. **If an email is provided, the classification result will be sent to your email.**
 
 ### 📊 **Data & Reports**
 1. **Dashboard** → View **live statistics & waste trends**.
@@ -216,9 +221,3 @@ If you like this project, don’t forget to **🌟 star** the repository on GitH
 Together, we can make waste management **smarter & eco-friendly**! ♻️  
 
 ---
-```
-
-🔥 This **README.md** is **structured, informative, and visually engaging**!  
-It covers **setup, features, API usage, chatbot integration, and deployment** in a **clear and concise** manner.  
-
-Would you like **any modifications** or additional **sections**? 🚀
