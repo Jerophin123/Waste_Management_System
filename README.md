@@ -16,7 +16,7 @@ The **Waste Management System** is an AI-powered waste classification and tracki
 ## 🏗️ Tech Stack  
 🔹 **Frontend:** React.js, Material-UI, Chart.js, Framer Motion  
 🔹 **Backend:** Flask, TensorFlow, Keras, OpenCV  
-🔹 **Database:** SQLite  
+🔹 **Database:** MySQL  
 🔹 **Visualization:** ReportLab, Matplotlib  
 🔹 **Email Notifications:** SMTP, Python Email API  
 
