@@ -1,37 +1,57 @@
-
 # 🗑️ Waste Management System 🚀  
 
+## 🌎 About the Project  
+The **Waste Management System (WMS)** is an **AI-powered waste classification** platform that classifies waste as **Bio-Degradable** or **Non-Bio-Degradable** using **Deep Learning**.  
+It includes **real-time image classification, video waste analysis, waste tracking, data visualization, chatbot assistance, and automated reporting** for an **eco-friendly waste disposal approach**.  
 
-## 🌱 About the Project  
-The **Waste Management System** is an AI-powered waste classification and tracking solution that helps in segregating waste into **bio-degradable** and **non-bio-degradable** categories using deep learning. The system processes images and videos to classify waste, visualize data trends, and generate reports for sustainable waste disposal.  
+---
 
-## 🎯 Features  
-✅ **Real-time Waste Classification** – Predict waste type using an AI model  
-✅ **Video-based Waste Analysis** – Process videos and classify frames  
-✅ **Interactive Dashboard** – View statistics with charts and reports  
+## 🎯 **Key Features**  
+
+✅ **Real-time Waste Classification** – Predicts waste type using an AI model  
+✅ **Webcam-based Detection** – Classify waste using a **live camera feed**  
+✅ **Video Waste Processing** – Extracts frames and classifies waste in videos  
+✅ **Interactive Dashboard** – Displays **waste trends, analytics & reports**  
 ✅ **PDF & CSV Reports** – Download waste reports in multiple formats  
-✅ **Email Notifications** – Send waste reports via email  
-✅ **RESTful API** – Easily integrate waste classification into other systems  
+✅ **Google Sheets & Drive Integration** – Auto-stores data & uploads files  
+✅ **AI Chatbot Assistance** – Answers waste-related queries dynamically  
+✅ **Email Notifications** – Send waste classification reports via email  
+✅ **RESTful API** – Provides endpoints for classification, statistics & reports  
 
-## 🏗️ Tech Stack  
-🔹 **Frontend:** React.js, Material-UI, Chart.js, Framer Motion  
+---
+
+## 🏗️ **Tech Stack**  
+
+🔹 **Frontend:** React.js, Material-UI, Framer Motion, Chart.js, React Webcam  
 🔹 **Backend:** Flask, TensorFlow, Keras, OpenCV  
 🔹 **Database:** MySQL  
 🔹 **Visualization:** ReportLab, Matplotlib  
 🔹 **Email Notifications:** SMTP, Python Email API  
 
-## ⚠️ Python Version Requirement  
-🟢 **This project runs only on Python 3.9.**  
-Ensure that you have Python **3.9.x** installed before proceeding.  
+---
 
-Check your Python version:
+## ⚠️ **Python & Node.js Requirements**  
+
+Ensure you have the following installed:  
+
+🟢 **Python 3.9**  
+🟢 **Node.js 16+**  
+
+Check your Python version:  
 ```sh
 python --version
 ```
-If you don’t have Python 3.9 installed, download it from: [Python 3.9 Downloads](https://www.python.org/downloads/release/python-390/)
+Check your Node.js version:  
+```sh
+node -v
+```
+If missing, download from:  
+- [Python 3.9](https://www.python.org/downloads/release/python-390/)  
+- [Node.js](https://nodejs.org/)  
 
+---
 
-## 🚀 Getting Started  
+## 🚀 **Getting Started**  
 
 ### **1️⃣ Clone the Repository**  
 ```sh
@@ -39,74 +59,166 @@ git clone https://github.com/yourusername/waste-management-system.git
 cd waste-management-system
 ```
 
-### **2️⃣ Create a Virtual Environment**  
-To prevent dependency conflicts, create and activate a **Python 3.9 virtual environment**:  
+### **2️⃣ Set Up the Backend (Flask & AI Model)**  
+Create a virtual environment:  
 ```sh
 python3.9 -m venv venv
 source venv/bin/activate  # macOS/Linux
 venv\Scripts\activate  # Windows
 ```
-
-### **3️⃣ Install Backend Dependencies**  
+Install dependencies:  
 ```sh
 pip install -r requirements.txt
 ```
+Start the Flask backend:  
+```sh
+python backend.py
+```
+The server runs at **`http://127.0.0.1:5000/`**.
 
-### **4️⃣ Set Up Frontend (React)**  
+---
+
+### **3️⃣ Set Up the Frontend (React.js)**  
+Navigate to the frontend folder:  
 ```sh
 cd frontend
 npm install
-npm run build
-cd ..
+npm start
 ```
+The React app runs at **`http://localhost:3000/`**.
 
-### **5️⃣ Start the Flask Backend**  
-```sh
-python backend2.py
-```
-Visit **`http://127.0.0.1:5000/`** to access the application.
+---
 
-## 📡 API Endpoints  
+## 📡 **API Endpoints**  
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/predict` | Upload an image and classify waste |
-| `POST` | `/api/predict_video` | Upload a video and classify waste per frame |
+| `POST` | `/api/realtime_predict` | Predict waste in real-time from webcam |
+| `POST` | `/api/predict_video` | Upload a video and classify frames |
 | `GET` | `/api/stats` | Get waste classification statistics |
 | `GET` | `/api/trends` | Get monthly waste trends |
 | `POST` | `/api/send_report` | Send waste classification reports via email |
+| `GET` | `/api/download_report` | Download a structured **PDF waste report** |
+| `GET` | `/api/download_logs` | Download waste classification logs as **CSV** |
 
-## 🔐 Environment Variables  
-Create a `.env` file for **SMTP email settings**:  
+---
+
+## 🔐 **Environment Variables (`.env` File)**  
+
+Create a `.env` file in the root directory and add the following:  
 ```ini
+# 📩 SMTP Email Configuration
 SMTP_SERVER=smtp.gmail.com
 SMTP_PORT=587
 EMAIL_SENDER=your-email@gmail.com
 EMAIL_PASSWORD=your-app-password
+
+# 📊 Google Sheets & Drive Integration
+GOOGLE_SHEETS_CREDS=credentials.json
+GOOGLE_DRIVE_CREDS=drive_credentials.json
+PARENT_FOLDER_ID=your-folder-id
+FOLDER_BIO=bio-folder-id
+FOLDER_NONBIO=nonbio-folder-id
+
+# 🔌 MySQL Database Configuration
+MYSQL_HOST=localhost
+MYSQL_USER=root
+MYSQL_PASSWORD=your-password
+MYSQL_DB=waste_management
 ```
 
-## 🛠️ Deployment  
-For **Production Deployment**, use:  
+---
+
+## 💬 **Chatbot AI Assistance**  
+
+The chatbot provides:  
+✅ **System Overview & Features**  
+✅ **Waste Classification Guide**  
+✅ **Live Waste Data Retrieval**  
+✅ **PDF & CSV Report Downloads**  
+✅ **Smart Waste Disposal Tips**  
+✅ **Email Notifications & Troubleshooting**  
+
+Activate chatbot via the floating **💬 Chat Icon** in the app.
+
+---
+
+## 🛠 **Deployment**  
+
+### **🔹 Deploy Backend (Flask)**
+Use **Gunicorn** for production:  
 ```sh
-gunicorn -w 4 -b 0.0.0.0:5000 backend:app
+gunicorn -w 4 -b 0.0.0.0:5000 backend2:app
 ```
-Use **NGINX** as a reverse proxy for Flask & React.  
+Use **NGINX** as a reverse proxy for Flask.
 
-## 👥 Contributors  
+### **🔹 Deploy Frontend (React)**
+Use **Vercel / Netlify / Firebase Hosting**:
+```sh
+npm run build
+```
+Then deploy the **`frontend/build`** folder.
+
+---
+
+## 🎯 **How to Use the System?**  
+
+### 📸 **Image Prediction**
+1. Go to the **Prediction Page**.
+2. **Upload an image** or **Enter a Google Drive link**.
+3. Click **Predict**.
+4. AI classifies the waste & shows confidence scores.
+
+### 📷 **Real-time Webcam Classification**
+1. Switch to **Camera Mode**.
+2. Select the desired **camera device**.
+3. Click **Start Real-Time** to begin predictions.
+
+### 🎥 **Video Analysis**
+1. Upload a **video file** or provide a **Google Drive link**.
+2. Click **Predict** and wait for frame extraction.
+3. View the **classified frames** in the results dialog.
+
+### 📊 **Data & Reports**
+1. **Dashboard** → View **live statistics & waste trends**.
+2. **Logs Page** → View **past waste records**.
+3. **Reports** → Download **CSV or PDF reports**.
+4. **Email Reports** → Send reports via email.
+
+---
+
+## 🏆 **Why Use This System?**
+✔ **AI-powered Waste Classification**  
+✔ **Optimized for Speed & Accuracy**  
+✔ **Real-time Predictions & Trend Analysis**  
+✔ **Data Storage in Google Sheets & Drive**  
+✔ **Automated Email Reports**  
+✔ **User-friendly Chatbot Integration**  
+✔ **Dark & Light Mode Theming**  
+
+---
+
+## 👥 **Contributors**  
 👨‍💻 **Your Name** – _Backend & AI_  
 🎨 **Collaborator Name** – _Frontend UI/UX_  
 💡 **Contributor Name** – _Data Visualization_  
 
-## 📜 License  
+---
+
+## 📜 **License**  
 📝 This project is licensed under the **MIT License** – feel free to use and modify!  
 
 ---
 
-🌎 **Together, we can make the world a cleaner place!** ♻️  
-⭐ Don't forget to **star** this repository! 🚀  
+## ⭐ **Support the Project!**
+If you like this project, don’t forget to **🌟 star** the repository on GitHub! 🚀  
+Together, we can make waste management **smarter & eco-friendly**! ♻️  
 
 ---
+```
 
-[📺 Watch the Demo Video](https://jsquads-my.sharepoint.com/:v:/g/personal/jsquads_jsquads_onmicrosoft_com/EZhYlcncjmhOpOnUWCsfB1sBKYFwjaUGPZHb8fNmpgjiiw?nav=eyJyZWZlcnJhbEluZm8iOnsicmVmZXJyYWxBcHAiOiJPbmVEcml2ZUZvckJ1c2luZXNzIiwicmVmZXJyYWxBcHBQbGF0Zm9ybSI6IldlYiIsInJlZmVycmFsTW9kZSI6InZpZXciLCJyZWZlcnJhbFZpZXciOiJNeUZpbGVzTGlua0NvcHkifX0&e=kiBbJj)
+🔥 This **README.md** is **structured, informative, and visually engaging**!  
+It covers **setup, features, API usage, chatbot integration, and deployment** in a **clear and concise** manner.  
 
-
-
+Would you like **any modifications** or additional **sections**? 🚀
