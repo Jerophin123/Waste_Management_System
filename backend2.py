@@ -88,7 +88,9 @@ MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
 MYSQL_DB = os.getenv("MYSQL_DB")
 
 # Initialize Flask app
-app = Flask(__name__)
+frontend_build_path = os.path.abspath("./frontendbuild")
+
+app = Flask(__name__, static_folder=frontend_build_path, template_folder=frontend_build_path)
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
 
@@ -2545,9 +2547,16 @@ def chatbot():
 
     return jsonify({"response": response})
 
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_react(path):
+    if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    return send_from_directory(app.template_folder, "index.html")
+
 @app.route("/")
 def home():
-    return render_template("index.html")
+    return "WMS is Working Properly"
 
 if __name__ == '__main__':
     print("\n🚀 Flask is starting...") 
