@@ -55,7 +55,7 @@ If missing, download from:
 
 ### **1️⃣ Clone the Repository**  
 ```sh
-git clone https://github.com/yourusername/waste-management-system.git
+git clone https://github.com/Jerophin123/waste-management-system.git
 cd waste-management-system
 ```
 
