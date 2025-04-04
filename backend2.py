@@ -6,6 +6,7 @@ import numpy as np
 import os
 import cv2
 import pymysql
+import time
 from datetime import datetime
 from flask_cors import CORS
 import logging
@@ -43,6 +44,8 @@ import io
 import smtplib
 import threading
 import os
+import secrets
+import string
 import re
 import random
 import gspread
@@ -94,7 +97,6 @@ app = Flask(__name__, static_folder=frontend_build_path, template_folder=fronten
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
 
-
 UPLOAD_FOLDER = "uploads"
 PROCESSED_FOLDER = "processed_frames"
 if not os.path.exists(UPLOAD_FOLDER):
@@ -105,7 +107,44 @@ if not os.path.exists(PROCESSED_FOLDER):
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["PROCESSED_FOLDER"] = PROCESSED_FOLDER
 
-DB_PATH = "waste_management.db"
+VALID_USERNAME = "admin"
+VALID_PASSWORD = "password123"
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.json
+    username = data.get("username")
+    password = data.get("password")
+
+    if not username or not password:
+        return jsonify({"success": False, "message": "Username and password are required"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"success": False, "message": "Database connection failed"}), 500
+
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM admins WHERE email = %s AND password = %s", (username, password))
+        user = cursor.fetchone()
+
+        if user:
+            return jsonify({"success": True, "user": {
+                "name": user["name"],
+                "email": user["email"],
+                "phone": user["phone"],
+                "gender": user["gender"],
+                "address": user["address"],
+                "blood_group": user["blood_group"]
+            }})
+        else:
+            return jsonify({"success": False, "message": "Invalid credentials"}), 401
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+    finally:
+        cursor.close()
+        conn.close()
 
 
 # ✅ Google Sheets Authentication
@@ -591,18 +630,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 
 # Database Connection Function
 def get_db_connection():
-    return pymysql.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DB,
-        cursorclass=pymysql.cursors.DictCursor
-    )
+    try:
+        conn = pymysql.connect(
+            host=MYSQL_HOST,
+            user=MYSQL_USER,
+            password=MYSQL_PASSWORD,
+            database=MYSQL_DB,
+            cursorclass=pymysql.cursors.DictCursor
+        )
+        logging.info("✅ Successfully connected to the MySQL database!")
+        return conn
+    except pymysql.err.OperationalError as e:
+        logging.error(f"❌ Database Connection Failed: {e}")
+        return None
+    except pymysql.MySQLError as e:
+        logging.error(f"❌ MySQL Error: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"❌ Unexpected Error while connecting to DB: {e}")
+        return None
 
 # Initialize Database
 def init_db():
     conn = get_db_connection()
     with conn.cursor() as cursor:
+        # Table for waste classification records
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS records (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -612,10 +664,27 @@ def init_db():
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+
+        # Table for admin registrations
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS admins (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(100),
+                email VARCHAR(100) UNIQUE,
+                password VARCHAR(100),
+                phone VARCHAR(20),
+                gender VARCHAR(10),
+                address TEXT,
+                blood_group VARCHAR(10)
+            )
+        ''')
+
     conn.commit()
     conn.close()
 
+# Call this during app initialization
 init_db()
+
 
 # Custom DepthwiseConv2D to handle the 'groups' argument
 class CustomDepthwiseConv2D(DepthwiseConv2D):
@@ -2554,11 +2623,8 @@ def serve_react(path):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.template_folder, "index.html")
 
-@app.route("/")
-def home():
-    return "WMS is Working Properly"
 
 if __name__ == '__main__':
     print("\n🚀 Flask is starting...") 
     print("\n Now, You are good to go ✅") # Explicit startup message
-    app.run()
+    app.run(host='0.0.0.0', port=5000)
