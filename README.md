@@ -202,12 +202,6 @@ Then deploy the **`frontend/build`** folder.
 ✔ **User-friendly Chatbot Integration**  
 ✔ **Dark & Light Mode Theming**  
 
----
-
-## 👥 **Contributors**  
-👨‍💻 **Your Name** – _Backend & AI_  
-🎨 **Collaborator Name** – _Frontend UI/UX_  
-💡 **Contributor Name** – _Data Visualization_  
 
 ---
 
