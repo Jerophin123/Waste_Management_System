@@ -32,6 +32,7 @@ from reportlab.graphics.charts.barcharts import VerticalBarChart
 from reportlab.graphics.charts.piecharts import Pie
 from reportlab.lib.colors import Color
 from reportlab.platypus import Paragraph
+from datetime import datetime, timedelta
 from google.cloud import translate_v2 as translate
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.enums import TA_CENTER
@@ -97,6 +98,7 @@ app = Flask(__name__, static_folder=frontend_build_path, template_folder=fronten
 CORS(app)  # Enable CORS for cross-origin requests
 CORS(app, resources={r"/processed_frames/*": {"origins": "*"}})
 
+
 UPLOAD_FOLDER = "uploads"
 PROCESSED_FOLDER = "processed_frames"
 if not os.path.exists(UPLOAD_FOLDER):
@@ -107,15 +109,13 @@ if not os.path.exists(PROCESSED_FOLDER):
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
 app.config["PROCESSED_FOLDER"] = PROCESSED_FOLDER
 
-VALID_USERNAME = "admin"
-VALID_PASSWORD = "password123"
-
 
 @app.route('/api/login', methods=['POST'])
 def login():
     data = request.json
     username = data.get("username")
     password = data.get("password")
+    user_ip = request.remote_addr  # Get IP address
 
     if not username or not password:
         return jsonify({"success": False, "message": "Username and password are required"}), 400
@@ -126,25 +126,142 @@ def login():
 
     try:
         cursor = conn.cursor()
+        # Validate admin credentials
         cursor.execute("SELECT * FROM admins WHERE email = %s AND password = %s", (username, password))
         user = cursor.fetchone()
 
         if user:
-            return jsonify({"success": True, "user": {
-                "name": user["name"],
-                "email": user["email"],
-                "phone": user["phone"],
-                "gender": user["gender"],
-                "address": user["address"],
-                "blood_group": user["blood_group"]
-            }})
+            # ✅ Log login event
+            cursor.execute(
+                "INSERT INTO login_logs (email, ip_address, login_time) VALUES (%s, %s, NOW())",
+                (user["email"], user_ip)
+            )
+            conn.commit()
+
+            return jsonify({
+                "success": True,
+                "user": {
+                    "name": user["name"],
+                    "email": user["email"],
+                    "phone": user["phone"],
+                    "gender": user["gender"],
+                    "address": user["address"],
+                    "blood_group": user["blood_group"],
+                    "ip_address": user_ip
+                }
+            })
         else:
             return jsonify({"success": False, "message": "Invalid credentials"}), 401
+
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
+        return jsonify({"success": False, "message": f"Login failed: {str(e)}"}), 500
+
     finally:
         cursor.close()
         conn.close()
+
+@app.route("/api/user_info", methods=["POST"])
+def get_user_info():
+    data = request.json
+    email = data.get("email")
+
+    if not email:
+        return jsonify({"success": False, "message": "Email is required"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"success": False, "message": "Database connection failed"}), 500
+
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT name, email, phone, gender, address, blood_group FROM admins WHERE email = %s", (email,))
+            user = cursor.fetchone()
+
+        if user:
+            return jsonify({"success": True, "user": user})
+        else:
+            return jsonify({"success": False, "message": "User not found"}), 404
+
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+    finally:
+        conn.close()
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    data = request.json
+    email = data.get("email")
+
+    print(f"📥 Logout attempt for: {email}")
+
+    if not email:
+        return jsonify({"success": False, "message": "Email is required"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"success": False, "message": "Database connection failed"}), 500
+
+    try:
+        with conn.cursor() as cursor:
+            # Step 1: Get all open sessions
+            cursor.execute('''
+                SELECT id, login_time FROM login_logs
+                WHERE email = %s AND logout_time IS NULL
+            ''', (email,))
+            open_sessions = cursor.fetchall()
+
+            print(f"🔍 Open sessions: {len(open_sessions)}")
+
+            if not open_sessions:
+                return jsonify({"success": False, "message": "No active session found."}), 404
+
+            logout_time = datetime.now()
+            updated = []
+
+            for session in open_sessions:
+                login_id = session["id"]
+                login_time = session["login_time"]
+
+                duration_seconds = int((logout_time - login_time).total_seconds())
+                duration_formatted = str(timedelta(seconds=duration_seconds))
+
+                print(f"📝 Updating id={login_id}, login={login_time}, logout={logout_time}, duration={duration_formatted}")
+
+                # Run the UPDATE
+                cursor.execute('''
+                    UPDATE login_logs
+                    SET logout_time = %s,
+                        duration_seconds = %s,
+                        duration_formatted = %s
+                    WHERE id = %s
+                ''', (logout_time, duration_seconds, duration_formatted, login_id))
+
+                print(f"➡️ Rows affected: {cursor.rowcount}")
+                updated.append({
+                    "id": login_id,
+                    "logout_time": logout_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "duration": duration_formatted
+                })
+
+            # Final commit
+            conn.commit()
+            print("✅ All sessions updated and committed.")
+
+            return jsonify({
+                "success": True,
+                "message": f"✅ {len(updated)} logout(s) recorded.",
+                "updated_sessions": updated
+            })
+
+    except Exception as e:
+        print("❌ Logout Error:", e)
+        return jsonify({"success": False, "message": f"Logout failed: {str(e)}"}), 500
+
+    finally:
+        conn.close()
+
 
 
 # ✅ Google Sheets Authentication
@@ -650,11 +767,10 @@ def get_db_connection():
         logging.error(f"❌ Unexpected Error while connecting to DB: {e}")
         return None
 
-# Initialize Database
 def init_db():
     conn = get_db_connection()
     with conn.cursor() as cursor:
-        # Table for waste classification records
+        # ✅ Table for waste classification records
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS records (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -665,7 +781,7 @@ def init_db():
             )
         ''')
 
-        # Table for admin registrations
+        # ✅ Table for admin registrations
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS admins (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -676,6 +792,19 @@ def init_db():
                 gender VARCHAR(10),
                 address TEXT,
                 blood_group VARCHAR(10)
+            )
+        ''')
+
+        # ✅ Table for login/logout tracking
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS login_logs (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                email VARCHAR(100),
+                ip_address VARCHAR(45),
+                login_time DATETIME,
+                logout_time DATETIME,
+                duration_seconds INT,
+                duration_formatted VARCHAR(20)
             )
         ''')
 
@@ -2622,7 +2751,6 @@ def serve_react(path):
     if path != "" and os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.template_folder, "index.html")
-
 
 if __name__ == '__main__':
     print("\n🚀 Flask is starting...") 
